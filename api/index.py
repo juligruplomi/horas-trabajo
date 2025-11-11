@@ -8,4 +8,4 @@ def read_root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": "2025-11-11T12:45:14Z"}
+    return {"status": "ok", "timestamp": "2025-11-11T12:47:11Z"}
