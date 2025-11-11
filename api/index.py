@@ -3,8 +3,8 @@
 app = FastAPI()
 
 @app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI"}
+def root():
+    return {"message": "API GrupLomi"}
 
 @app.get("/health")
 def health():

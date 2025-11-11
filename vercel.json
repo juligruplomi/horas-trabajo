@@ -1,4 +1,0 @@
-﻿{
-  "buildCommand": "pip install -r requirements.txt",
-  "outputDirectory": "api"
-}
