@@ -3,9 +3,9 @@
 app = FastAPI()
 
 @app.get("/")
-def root():
-    return {"message": "API GrupLomi"}
+def read_root():
+    return {"message": "Hello from FastAPI"}
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "timestamp": "2025-11-11T12:45:14Z"}
