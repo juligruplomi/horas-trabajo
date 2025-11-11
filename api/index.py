@@ -1,11 +1,11 @@
-﻿from http.server import BaseHTTPRequestHandler
-import json
-import sys
-import os
+﻿from fastapi import FastAPI
 
-# Agregar ruta para importar desde la raíz
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+app = FastAPI()
 
-from index import handler
+@app.get("/")
+def read_root():
+    return {"message": "Hello from FastAPI"}
 
-# Vercel ya maneja el handler de BaseHTTPRequestHandler automáticamente
+@app.get("/health")
+def health():
+    return {"status": "ok"}
