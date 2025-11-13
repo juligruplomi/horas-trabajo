@@ -1,13 +1,7 @@
 {
   "functions": {
     "api/index.js": {
-      "runtime": "nodejs20.x"
+      "runtime": "now-node@2"
     }
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index.js"
-    }
-  ]
+  }
 }
