@@ -20,8 +20,8 @@ const usuarios = [
 ]
 
 const horas = [
-  { id: 1, usuario_id: 3, fecha: '2025-11-10', tipo_trabajo: 'Averia', proyecto: 'Proyecto A', horas: 8, descripcion: 'Reparacion', estado: 'validado' },
-  { id: 2, usuario_id: 3, fecha: '2025-11-09', tipo_trabajo: 'Obra', proyecto: 'Proyecto B', horas: 6, descripcion: 'Construccion', estado: 'pendiente' }
+  { id: 1, usuario_id: 3, fecha: '2025-11-10', tipo_trabajo: 'Averia', numero_aviso: 'AV-2025-0001', horas: 8, descripcion: 'Reparacion', estado: 'validado' },
+  { id: 2, usuario_id: 3, fecha: '2025-11-09', tipo_trabajo: 'Obra', numero_aviso: 'OB-2025-0042', horas: 6, descripcion: 'Construccion', estado: 'pendiente' }
 ]
 
 const verifyToken = (req, res, next) => {
@@ -61,16 +61,16 @@ app.get('/horas', verifyToken, (req, res) => {
 })
 
 app.post('/horas', verifyToken, (req, res) => {
-  const { fecha, tipo_trabajo, proyecto, horas: cant_horas, descripcion } = req.body
-  if (!fecha || !tipo_trabajo || !proyecto || !cant_horas) {
-    return res.status(400).json({ error: 'Missing required fields' })
+  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion } = req.body
+  if (!fecha || !tipo_trabajo || !numero_aviso || !cant_horas) {
+    return res.status(400).json({ error: 'Missing required fields: fecha, tipo_trabajo, numero_aviso, horas' })
   }
   const newHora = {
     id: Math.max(...horas.map(h => h.id), 0) + 1,
     usuario_id: req.user.id,
     fecha,
     tipo_trabajo,
-    proyecto,
+    numero_aviso,
     horas: parseFloat(cant_horas),
     descripcion: descripcion || '',
     estado: 'pendiente'
@@ -86,12 +86,12 @@ app.put('/horas/:id', verifyToken, (req, res) => {
   if (hora.usuario_id !== req.user.id && req.user.role === 'operario') {
     return res.status(403).json({ error: 'Not authorized' })
   }
-  const { fecha, tipo_trabajo, proyecto, horas: cant_horas, descripcion, estado } = req.body
+  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, estado } = req.body
   horas[horaIdx] = {
     ...hora,
     fecha: fecha || hora.fecha,
     tipo_trabajo: tipo_trabajo || hora.tipo_trabajo,
-    proyecto: proyecto || hora.proyecto,
+    numero_aviso: numero_aviso || hora.numero_aviso,
     horas: cant_horas ? parseFloat(cant_horas) : hora.horas,
     descripcion: descripcion || hora.descripcion,
     estado: estado || hora.estado
