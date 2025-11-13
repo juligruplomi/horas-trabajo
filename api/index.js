@@ -24,6 +24,24 @@ const horas = [
   { id: 2, usuario_id: 3, fecha: '2025-11-09', tipo_trabajo: 'Obra', numero_aviso: 'OB-2025-0042', horas: 6, descripcion: 'Construccion', estado: 'pendiente' }
 ]
 
+const avisos = [
+  { id: 1, numero: 'AV-2025-0001', cliente: 'Cliente A', descripcion: 'Avería en línea 3', estado: 'en_curso', fecha_creacion: '2025-11-01' },
+  { id: 2, numero: 'AV-2025-0002', cliente: 'Cliente B', descripcion: 'Fuga de agua', estado: 'en_curso', fecha_creacion: '2025-11-05' },
+  { id: 3, numero: 'AV-2025-0003', cliente: 'Cliente A', descripcion: 'Motor averiado', estado: 'finalizado', fecha_creacion: '2025-10-20' }
+]
+
+const obras = [
+  { id: 1, numero: 'OB-2025-0042', cliente: 'Cliente C', descripcion: 'Construcción nave 2', estado: 'en_curso', fecha_creacion: '2025-10-15', fecha_fin_estimada: '2025-12-15' },
+  { id: 2, numero: 'OB-2025-0043', cliente: 'Cliente D', descripcion: 'Reforma local', estado: 'en_curso', fecha_creacion: '2025-11-01', fecha_fin_estimada: '2025-11-30' },
+  { id: 3, numero: 'OB-2025-0041', cliente: 'Cliente B', descripcion: 'Cimentación', estado: 'finalizado', fecha_creacion: '2025-08-01', fecha_fin_estimada: '2025-10-01' }
+]
+
+const mantenimientos = [
+  { id: 1, descripcion: 'Inspección compresor', tipo_alerta: 'mensual', proxima_alerta: '2025-12-10', cliente: 'Cliente A', estado: 'activo' },
+  { id: 2, descripcion: 'Cambio filtros', tipo_alerta: 'trimestral', proxima_alerta: '2025-12-31', cliente: 'Cliente C', estado: 'activo' },
+  { id: 3, descripcion: 'Revisión anual', tipo_alerta: 'anual', proxima_alerta: '2026-01-15', cliente: 'Cliente D', estado: 'activo' }
+]
+
 const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1]
   if (!token) return res.status(401).json({ error: 'Token required' })
@@ -34,6 +52,13 @@ const verifyToken = (req, res, next) => {
   } catch (err) {
     res.status(401).json({ error: 'Invalid token' })
   }
+}
+
+const verifyAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  next()
 }
 
 app.post('/auth/login', (req, res) => {
@@ -121,6 +146,154 @@ app.put('/horas/:id/validar', verifyToken, (req, res) => {
   res.json(horas[horaIdx])
 })
 
+// ===== AVISOS ENDPOINTS =====
+app.get('/avisos', verifyToken, (req, res) => {
+  res.json(avisos)
+})
+
+app.get('/avisos/activos', verifyToken, (req, res) => {
+  res.json(avisos.filter(a => a.estado === 'en_curso'))
+})
+
+app.post('/avisos', verifyToken, verifyAdmin, (req, res) => {
+  const { numero, cliente, descripcion, estado } = req.body
+  if (!numero || !cliente || !descripcion) {
+    return res.status(400).json({ error: 'Missing required fields' })
+  }
+  const newAviso = {
+    id: Math.max(...avisos.map(a => a.id), 0) + 1,
+    numero,
+    cliente,
+    descripcion,
+    estado: estado || 'en_curso',
+    fecha_creacion: new Date().toISOString().split('T')[0]
+  }
+  avisos.push(newAviso)
+  res.status(201).json(newAviso)
+})
+
+app.put('/avisos/:id', verifyToken, verifyAdmin, (req, res) => {
+  const avisoIdx = avisos.findIndex(a => a.id === parseInt(req.params.id))
+  if (avisoIdx === -1) return res.status(404).json({ error: 'Aviso not found' })
+  const { numero, cliente, descripcion, estado } = req.body
+  avisos[avisoIdx] = {
+    ...avisos[avisoIdx],
+    numero: numero || avisos[avisoIdx].numero,
+    cliente: cliente || avisos[avisoIdx].cliente,
+    descripcion: descripcion || avisos[avisoIdx].descripcion,
+    estado: estado || avisos[avisoIdx].estado
+  }
+  res.json(avisos[avisoIdx])
+})
+
+app.delete('/avisos/:id', verifyToken, verifyAdmin, (req, res) => {
+  const avisoIdx = avisos.findIndex(a => a.id === parseInt(req.params.id))
+  if (avisoIdx === -1) return res.status(404).json({ error: 'Aviso not found' })
+  avisos.splice(avisoIdx, 1)
+  res.json({ message: 'Deleted' })
+})
+
+// ===== OBRAS ENDPOINTS =====
+app.get('/obras', verifyToken, (req, res) => {
+  res.json(obras)
+})
+
+app.get('/obras/activas', verifyToken, (req, res) => {
+  res.json(obras.filter(o => o.estado === 'en_curso'))
+})
+
+app.post('/obras', verifyToken, verifyAdmin, (req, res) => {
+  const { numero, cliente, descripcion, estado, fecha_fin_estimada } = req.body
+  if (!numero || !cliente || !descripcion) {
+    return res.status(400).json({ error: 'Missing required fields' })
+  }
+  const newObra = {
+    id: Math.max(...obras.map(o => o.id), 0) + 1,
+    numero,
+    cliente,
+    descripcion,
+    estado: estado || 'en_curso',
+    fecha_creacion: new Date().toISOString().split('T')[0],
+    fecha_fin_estimada: fecha_fin_estimada || null
+  }
+  obras.push(newObra)
+  res.status(201).json(newObra)
+})
+
+app.put('/obras/:id', verifyToken, verifyAdmin, (req, res) => {
+  const obraIdx = obras.findIndex(o => o.id === parseInt(req.params.id))
+  if (obraIdx === -1) return res.status(404).json({ error: 'Obra not found' })
+  const { numero, cliente, descripcion, estado, fecha_fin_estimada } = req.body
+  obras[obraIdx] = {
+    ...obras[obraIdx],
+    numero: numero || obras[obraIdx].numero,
+    cliente: cliente || obras[obraIdx].cliente,
+    descripcion: descripcion || obras[obraIdx].descripcion,
+    estado: estado || obras[obraIdx].estado,
+    fecha_fin_estimada: fecha_fin_estimada || obras[obraIdx].fecha_fin_estimada
+  }
+  res.json(obras[obraIdx])
+})
+
+app.delete('/obras/:id', verifyToken, verifyAdmin, (req, res) => {
+  const obraIdx = obras.findIndex(o => o.id === parseInt(req.params.id))
+  if (obraIdx === -1) return res.status(404).json({ error: 'Obra not found' })
+  obras.splice(obraIdx, 1)
+  res.json({ message: 'Deleted' })
+})
+
+// ===== MANTENIMIENTOS ENDPOINTS =====
+app.get('/mantenimientos', verifyToken, (req, res) => {
+  res.json(mantenimientos)
+})
+
+app.get('/mantenimientos/activos', verifyToken, (req, res) => {
+  res.json(mantenimientos.filter(m => m.estado === 'activo'))
+})
+
+app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
+  const { descripcion, tipo_alerta, cliente, estado } = req.body
+  if (!descripcion || !tipo_alerta || !cliente) {
+    return res.status(400).json({ error: 'Missing required fields' })
+  }
+  if (!['semanal', 'mensual', 'trimestral', 'anual'].includes(tipo_alerta)) {
+    return res.status(400).json({ error: 'tipo_alerta must be: semanal, mensual, trimestral, anual' })
+  }
+  const newMant = {
+    id: Math.max(...mantenimientos.map(m => m.id), 0) + 1,
+    descripcion,
+    tipo_alerta,
+    cliente,
+    estado: estado || 'activo',
+    proxima_alerta: calcularProximaAlerta(tipo_alerta)
+  }
+  mantenimientos.push(newMant)
+  res.status(201).json(newMant)
+})
+
+app.put('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
+  const mantIdx = mantenimientos.findIndex(m => m.id === parseInt(req.params.id))
+  if (mantIdx === -1) return res.status(404).json({ error: 'Mantenimiento not found' })
+  const { descripcion, tipo_alerta, cliente, estado } = req.body
+  mantenimientos[mantIdx] = {
+    ...mantenimientos[mantIdx],
+    descripcion: descripcion || mantenimientos[mantIdx].descripcion,
+    tipo_alerta: tipo_alerta || mantenimientos[mantIdx].tipo_alerta,
+    cliente: cliente || mantenimientos[mantIdx].cliente,
+    estado: estado || mantenimientos[mantIdx].estado,
+    proxima_alerta: tipo_alerta ? calcularProximaAlerta(tipo_alerta) : mantenimientos[mantIdx].proxima_alerta
+  }
+  res.json(mantenimientos[mantIdx])
+})
+
+app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
+  const mantIdx = mantenimientos.findIndex(m => m.id === parseInt(req.params.id))
+  if (mantIdx === -1) return res.status(404).json({ error: 'Mantenimiento not found' })
+  mantenimientos.splice(mantIdx, 1)
+  res.json({ message: 'Deleted' })
+})
+
+// ===== USUARIOS ENDPOINTS =====
 app.get('/usuarios', verifyToken, (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Not authorized' })
@@ -158,6 +331,7 @@ app.post('/usuarios', verifyToken, (req, res) => {
   })
 })
 
+// ===== HEALTH ENDPOINT =====
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
 })
@@ -165,6 +339,29 @@ app.get('/health', (req, res) => {
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' })
 })
+
+// ===== FUNCIONES AUXILIARES =====
+function calcularProximaAlerta(tipo_alerta) {
+  const hoy = new Date()
+  const proxima = new Date(hoy)
+  
+  switch(tipo_alerta) {
+    case 'semanal':
+      proxima.setDate(proxima.getDate() + 7)
+      break
+    case 'mensual':
+      proxima.setMonth(proxima.getMonth() + 1)
+      break
+    case 'trimestral':
+      proxima.setMonth(proxima.getMonth() + 3)
+      break
+    case 'anual':
+      proxima.setFullYear(proxima.getFullYear() + 1)
+      break
+  }
+  
+  return proxima.toISOString().split('T')[0]
+}
 
 const PORT = process.env.PORT || 8000
 app.listen(PORT, () => {
