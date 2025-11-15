@@ -13,33 +13,58 @@ const PROXY_URL = process.env.PROXY_URL || 'http://185.194.59.40:3001'
 const PROXY_API_KEY = process.env.PROXY_API_KEY || 'GrupLomi2024ProxySecureKey_XyZ789'
 const JWT_SECRET = process.env.JWT_SECRET_KEY || 'HorasTrabajo_JWT_Secret_2025'
 
-const usuarios = [
+let usuarios = [
   { id: 1, email: 'admin@gruplomi.com', nombre: 'Admin', role: 'admin', password: bcrypt.hashSync('Admin2025!', 10) },
   { id: 2, email: 'supervisor@gruplomi.com', nombre: 'Supervisor', role: 'supervisor', password: bcrypt.hashSync('Sup2025!', 10) },
   { id: 3, email: 'juan@gruplomi.com', nombre: 'Juan Lopez', role: 'operario', password: bcrypt.hashSync('Juan2025!', 10) }
 ]
 
-const horas = [
+const roles = [
+  { id: 1, nombre: 'admin', permisos: ['agregar_horas', 'editar_horas', 'eliminar_horas', 'supervisar_horas', 'editar_horas_otros', 'visualizar_horas_otros', 'editar_configuracion', 'gestionar_usuarios'] },
+  { id: 2, nombre: 'supervisor', permisos: ['agregar_horas', 'editar_horas', 'eliminar_horas', 'supervisar_horas', 'editar_horas_otros', 'visualizar_horas_otros'] },
+  { id: 3, nombre: 'operario', permisos: ['agregar_horas', 'editar_horas', 'eliminar_horas'] }
+]
+
+let configuracion = {
+  empresa: {
+    nombre: 'GrupLomi',
+    logo: null,
+    color_primario: '#0071e3',
+    color_secundario: '#0066cc'
+  },
+  idioma: {
+    idioma_principal: 'es',
+    traducciones: {}
+  },
+  smtp: {
+    host: '',
+    puerto: 587,
+    usuario: '',
+    contraseña: ''
+  }
+}
+
+let horas = [
   { id: 1, usuario_id: 3, fecha: '2025-11-10', tipo_trabajo: 'Averia', numero_aviso: 'AV-2025-0001', horas: 8, descripcion: 'Reparacion', estado: 'validado' },
   { id: 2, usuario_id: 3, fecha: '2025-11-09', tipo_trabajo: 'Obra', numero_aviso: 'OB-2025-0042', horas: 6, descripcion: 'Construccion', estado: 'pendiente' }
 ]
 
-const avisos = [
-  { id: 1, numero: 'AV-2025-0001', cliente: 'Cliente A', descripcion: 'Avería en línea 3', estado: 'en_curso', fecha_creacion: '2025-11-01' },
-  { id: 2, numero: 'AV-2025-0002', cliente: 'Cliente B', descripcion: 'Fuga de agua', estado: 'en_curso', fecha_creacion: '2025-11-05' },
-  { id: 3, numero: 'AV-2025-0003', cliente: 'Cliente A', descripcion: 'Motor averiado', estado: 'finalizado', fecha_creacion: '2025-10-20' }
+let avisos = [
+  { id: 1, numero: 'AV-2025-0001', cliente: 'Cliente A', descripcion: 'Avería en línea 3', estado: 'en_curso', fecha_creacion: '2025-11-01', fecha: '2025-11-01', alertas_email: ['admin@gruplomi.com'] },
+  { id: 2, numero: 'AV-2025-0002', cliente: 'Cliente B', descripcion: 'Fuga de agua', estado: 'en_curso', fecha_creacion: '2025-11-05', fecha: '2025-11-05', alertas_email: ['admin@gruplomi.com'] },
+  { id: 3, numero: 'AV-2025-0003', cliente: 'Cliente A', descripcion: 'Motor averiado', estado: 'finalizado', fecha_creacion: '2025-10-20', fecha: '2025-10-20', alertas_email: [] }
 ]
 
-const obras = [
-  { id: 1, numero: 'OB-2025-0042', cliente: 'Cliente C', descripcion: 'Construcción nave 2', estado: 'en_curso', fecha_creacion: '2025-10-15', fecha_fin_estimada: '2025-12-15' },
-  { id: 2, numero: 'OB-2025-0043', cliente: 'Cliente D', descripcion: 'Reforma local', estado: 'en_curso', fecha_creacion: '2025-11-01', fecha_fin_estimada: '2025-11-30' },
-  { id: 3, numero: 'OB-2025-0041', cliente: 'Cliente B', descripcion: 'Cimentación', estado: 'finalizado', fecha_creacion: '2025-08-01', fecha_fin_estimada: '2025-10-01' }
+let obras = [
+  { id: 1, numero: 'OB-2025-0042', cliente: 'Cliente C', descripcion: 'Construcción nave 2', estado: 'en_curso', fecha_creacion: '2025-10-15', fecha: '2025-10-15', fecha_fin_estimada: '2025-12-15', alertas_email: ['admin@gruplomi.com'] },
+  { id: 2, numero: 'OB-2025-0043', cliente: 'Cliente D', descripcion: 'Reforma local', estado: 'en_curso', fecha_creacion: '2025-11-01', fecha: '2025-11-01', fecha_fin_estimada: '2025-11-30', alertas_email: ['admin@gruplomi.com'] },
+  { id: 3, numero: 'OB-2025-0041', cliente: 'Cliente B', descripcion: 'Cimentación', estado: 'finalizado', fecha_creacion: '2025-08-01', fecha: '2025-08-01', fecha_fin_estimada: '2025-10-01', alertas_email: [] }
 ]
 
-const mantenimientos = [
-  { id: 1, descripcion: 'Inspección compresor', tipo_alerta: 'mensual', proxima_alerta: '2025-12-10', cliente: 'Cliente A', estado: 'activo' },
-  { id: 2, descripcion: 'Cambio filtros', tipo_alerta: 'trimestral', proxima_alerta: '2025-12-31', cliente: 'Cliente C', estado: 'activo' },
-  { id: 3, descripcion: 'Revisión anual', tipo_alerta: 'anual', proxima_alerta: '2026-01-15', cliente: 'Cliente D', estado: 'activo' }
+let mantenimientos = [
+  { id: 1, descripcion: 'Inspección compresor', tipo_alerta: 'mensual', proxima_alerta: '2025-12-10', cliente: 'Cliente A', estado: 'activo', primera_alerta: '2025-11-10', alertas_email: ['admin@gruplomi.com'] },
+  { id: 2, descripcion: 'Cambio filtros', tipo_alerta: 'trimestral', proxima_alerta: '2025-12-31', cliente: 'Cliente C', estado: 'activo', primera_alerta: '2025-09-30', alertas_email: ['admin@gruplomi.com'] },
+  { id: 3, descripcion: 'Revisión anual', tipo_alerta: 'anual', proxima_alerta: '2026-01-15', cliente: 'Cliente D', estado: 'activo', primera_alerta: '2025-01-15', alertas_email: ['admin@gruplomi.com'] }
 ]
 
 const verifyToken = (req, res, next) => {
@@ -61,6 +86,7 @@ const verifyAdmin = (req, res, next) => {
   next()
 }
 
+// ===== AUTH ENDPOINTS =====
 app.post('/auth/login', (req, res) => {
   const { email, password } = req.body
   const usuario = usuarios.find(u => u.email === email)
@@ -77,6 +103,7 @@ app.get('/auth/me', verifyToken, (req, res) => {
   res.json({ id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role })
 })
 
+// ===== HORAS ENDPOINTS =====
 app.get('/horas', verifyToken, (req, res) => {
   let result = horas
   if (req.user.role === 'operario') {
@@ -156,9 +183,9 @@ app.get('/avisos/activos', verifyToken, (req, res) => {
 })
 
 app.post('/avisos', verifyToken, verifyAdmin, (req, res) => {
-  const { numero, cliente, descripcion, estado } = req.body
-  if (!numero || !cliente || !descripcion) {
-    return res.status(400).json({ error: 'Missing required fields' })
+  const { numero, cliente, descripcion, estado, fecha, alertas_email } = req.body
+  if (!numero || !cliente || !descripcion || !fecha) {
+    return res.status(400).json({ error: 'Missing required fields: numero, cliente, descripcion, fecha' })
   }
   const newAviso = {
     id: Math.max(...avisos.map(a => a.id), 0) + 1,
@@ -166,7 +193,9 @@ app.post('/avisos', verifyToken, verifyAdmin, (req, res) => {
     cliente,
     descripcion,
     estado: estado || 'en_curso',
-    fecha_creacion: new Date().toISOString().split('T')[0]
+    fecha_creacion: new Date().toISOString().split('T')[0],
+    fecha: fecha,
+    alertas_email: alertas_email || []
   }
   avisos.push(newAviso)
   res.status(201).json(newAviso)
@@ -175,13 +204,15 @@ app.post('/avisos', verifyToken, verifyAdmin, (req, res) => {
 app.put('/avisos/:id', verifyToken, verifyAdmin, (req, res) => {
   const avisoIdx = avisos.findIndex(a => a.id === parseInt(req.params.id))
   if (avisoIdx === -1) return res.status(404).json({ error: 'Aviso not found' })
-  const { numero, cliente, descripcion, estado } = req.body
+  const { numero, cliente, descripcion, estado, fecha, alertas_email } = req.body
   avisos[avisoIdx] = {
     ...avisos[avisoIdx],
     numero: numero || avisos[avisoIdx].numero,
     cliente: cliente || avisos[avisoIdx].cliente,
     descripcion: descripcion || avisos[avisoIdx].descripcion,
-    estado: estado || avisos[avisoIdx].estado
+    estado: estado || avisos[avisoIdx].estado,
+    fecha: fecha || avisos[avisoIdx].fecha,
+    alertas_email: alertas_email !== undefined ? alertas_email : avisos[avisoIdx].alertas_email
   }
   res.json(avisos[avisoIdx])
 })
@@ -203,9 +234,9 @@ app.get('/obras/activas', verifyToken, (req, res) => {
 })
 
 app.post('/obras', verifyToken, verifyAdmin, (req, res) => {
-  const { numero, cliente, descripcion, estado, fecha_fin_estimada } = req.body
-  if (!numero || !cliente || !descripcion) {
-    return res.status(400).json({ error: 'Missing required fields' })
+  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email } = req.body
+  if (!numero || !cliente || !descripcion || !fecha) {
+    return res.status(400).json({ error: 'Missing required fields: numero, cliente, descripcion, fecha' })
   }
   const newObra = {
     id: Math.max(...obras.map(o => o.id), 0) + 1,
@@ -214,7 +245,9 @@ app.post('/obras', verifyToken, verifyAdmin, (req, res) => {
     descripcion,
     estado: estado || 'en_curso',
     fecha_creacion: new Date().toISOString().split('T')[0],
-    fecha_fin_estimada: fecha_fin_estimada || null
+    fecha: fecha,
+    fecha_fin_estimada: fecha_fin_estimada || null,
+    alertas_email: alertas_email || []
   }
   obras.push(newObra)
   res.status(201).json(newObra)
@@ -223,14 +256,16 @@ app.post('/obras', verifyToken, verifyAdmin, (req, res) => {
 app.put('/obras/:id', verifyToken, verifyAdmin, (req, res) => {
   const obraIdx = obras.findIndex(o => o.id === parseInt(req.params.id))
   if (obraIdx === -1) return res.status(404).json({ error: 'Obra not found' })
-  const { numero, cliente, descripcion, estado, fecha_fin_estimada } = req.body
+  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email } = req.body
   obras[obraIdx] = {
     ...obras[obraIdx],
     numero: numero || obras[obraIdx].numero,
     cliente: cliente || obras[obraIdx].cliente,
     descripcion: descripcion || obras[obraIdx].descripcion,
     estado: estado || obras[obraIdx].estado,
-    fecha_fin_estimada: fecha_fin_estimada || obras[obraIdx].fecha_fin_estimada
+    fecha: fecha || obras[obraIdx].fecha,
+    fecha_fin_estimada: fecha_fin_estimada || obras[obraIdx].fecha_fin_estimada,
+    alertas_email: alertas_email !== undefined ? alertas_email : obras[obraIdx].alertas_email
   }
   res.json(obras[obraIdx])
 })
@@ -252,9 +287,9 @@ app.get('/mantenimientos/activos', verifyToken, (req, res) => {
 })
 
 app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
-  const { descripcion, tipo_alerta, cliente, estado } = req.body
-  if (!descripcion || !tipo_alerta || !cliente) {
-    return res.status(400).json({ error: 'Missing required fields' })
+  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
+  if (!descripcion || !tipo_alerta || !cliente || !primera_alerta) {
+    return res.status(400).json({ error: 'Missing required fields: descripcion, tipo_alerta, cliente, primera_alerta' })
   }
   if (!['semanal', 'mensual', 'trimestral', 'anual'].includes(tipo_alerta)) {
     return res.status(400).json({ error: 'tipo_alerta must be: semanal, mensual, trimestral, anual' })
@@ -265,7 +300,9 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
     tipo_alerta,
     cliente,
     estado: estado || 'activo',
-    proxima_alerta: calcularProximaAlerta(tipo_alerta)
+    primera_alerta: primera_alerta,
+    proxima_alerta: calcularProximaAlerta(tipo_alerta, primera_alerta),
+    alertas_email: alertas_email || []
   }
   mantenimientos.push(newMant)
   res.status(201).json(newMant)
@@ -274,14 +311,16 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
 app.put('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
   const mantIdx = mantenimientos.findIndex(m => m.id === parseInt(req.params.id))
   if (mantIdx === -1) return res.status(404).json({ error: 'Mantenimiento not found' })
-  const { descripcion, tipo_alerta, cliente, estado } = req.body
+  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
   mantenimientos[mantIdx] = {
     ...mantenimientos[mantIdx],
     descripcion: descripcion || mantenimientos[mantIdx].descripcion,
     tipo_alerta: tipo_alerta || mantenimientos[mantIdx].tipo_alerta,
     cliente: cliente || mantenimientos[mantIdx].cliente,
     estado: estado || mantenimientos[mantIdx].estado,
-    proxima_alerta: tipo_alerta ? calcularProximaAlerta(tipo_alerta) : mantenimientos[mantIdx].proxima_alerta
+    primera_alerta: primera_alerta || mantenimientos[mantIdx].primera_alerta,
+    proxima_alerta: tipo_alerta ? calcularProximaAlerta(tipo_alerta, primera_alerta || mantenimientos[mantIdx].primera_alerta) : mantenimientos[mantIdx].proxima_alerta,
+    alertas_email: alertas_email !== undefined ? alertas_email : mantenimientos[mantIdx].alertas_email
   }
   res.json(mantenimientos[mantIdx])
 })
@@ -331,6 +370,98 @@ app.post('/usuarios', verifyToken, (req, res) => {
   })
 })
 
+app.put('/usuarios/:id', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const usuarioIdx = usuarios.findIndex(u => u.id === parseInt(req.params.id))
+  if (usuarioIdx === -1) return res.status(404).json({ error: 'Usuario not found' })
+  
+  const { email, nombre, role, password } = req.body
+  if (email) usuarios[usuarioIdx].email = email
+  if (nombre) usuarios[usuarioIdx].nombre = nombre
+  if (role) usuarios[usuarioIdx].role = role
+  if (password) usuarios[usuarioIdx].password = bcrypt.hashSync(password, 10)
+  
+  res.json({
+    id: usuarios[usuarioIdx].id,
+    email: usuarios[usuarioIdx].email,
+    nombre: usuarios[usuarioIdx].nombre,
+    role: usuarios[usuarioIdx].role
+  })
+})
+
+app.delete('/usuarios/:id', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const usuarioIdx = usuarios.findIndex(u => u.id === parseInt(req.params.id))
+  if (usuarioIdx === -1) return res.status(404).json({ error: 'Usuario not found' })
+  usuarios.splice(usuarioIdx, 1)
+  res.json({ message: 'Usuario deleted' })
+})
+
+// ===== ROLES ENDPOINTS =====
+app.get('/roles', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  res.json(roles)
+})
+
+app.put('/roles/:id', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const rolIdx = roles.findIndex(r => r.id === parseInt(req.params.id))
+  if (rolIdx === -1) return res.status(404).json({ error: 'Rol not found' })
+  
+  const { permisos } = req.body
+  if (Array.isArray(permisos)) {
+    roles[rolIdx].permisos = permisos
+  }
+  res.json(roles[rolIdx])
+})
+
+// ===== CONFIGURACION ENDPOINTS =====
+app.get('/configuracion', verifyToken, verifyAdmin, (req, res) => {
+  res.json(configuracion)
+})
+
+app.put('/configuracion/empresa', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const { nombre, logo, color_primario, color_secundario } = req.body
+  if (nombre) configuracion.empresa.nombre = nombre
+  if (logo) configuracion.empresa.logo = logo
+  if (color_primario) configuracion.empresa.color_primario = color_primario
+  if (color_secundario) configuracion.empresa.color_secundario = color_secundario
+  res.json(configuracion.empresa)
+})
+
+app.put('/configuracion/idioma', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const { idioma_principal, traducciones } = req.body
+  if (idioma_principal) configuracion.idioma.idioma_principal = idioma_principal
+  if (traducciones) configuracion.idioma.traducciones = traducciones
+  res.json(configuracion.idioma)
+})
+
+app.put('/configuracion/smtp', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const { host, puerto, usuario, contraseña } = req.body
+  if (host) configuracion.smtp.host = host
+  if (puerto) configuracion.smtp.puerto = puerto
+  if (usuario) configuracion.smtp.usuario = usuario
+  if (contraseña) configuracion.smtp.contraseña = contraseña
+  res.json(configuracion.smtp)
+})
+
 // ===== HEALTH ENDPOINT =====
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
@@ -341,8 +472,8 @@ app.use((req, res) => {
 })
 
 // ===== FUNCIONES AUXILIARES =====
-function calcularProximaAlerta(tipo_alerta) {
-  const hoy = new Date()
+function calcularProximaAlerta(tipo_alerta, fecha_base) {
+  const hoy = fecha_base ? new Date(fecha_base) : new Date()
   const proxima = new Date(hoy)
   
   switch(tipo_alerta) {
