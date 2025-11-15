@@ -62,9 +62,9 @@ let obras = [
 ]
 
 let mantenimientos = [
-  { id: 1, descripcion: 'Inspección compresor', tipo_alerta: 'mensual', proxima_alerta: '2025-12-10', cliente: 'Cliente A', estado: 'activo', primera_alerta: '2025-11-10', alertas_email: ['admin@gruplomi.com'] },
-  { id: 2, descripcion: 'Cambio filtros', tipo_alerta: 'trimestral', proxima_alerta: '2025-12-31', cliente: 'Cliente C', estado: 'activo', primera_alerta: '2025-09-30', alertas_email: ['admin@gruplomi.com'] },
-  { id: 3, descripcion: 'Revisión anual', tipo_alerta: 'anual', proxima_alerta: '2026-01-15', cliente: 'Cliente D', estado: 'activo', primera_alerta: '2025-01-15', alertas_email: ['admin@gruplomi.com'] }
+  { id: 1, descripcion: 'Inspección compresor', tipo_alerta: 'mensual', proxima_alerta: '2025-12-10', cliente: 'Cliente A', estado: 'activo', fecha_creacion: '2025-11-01', primera_alerta: '2025-11-10', alertas_email: ['admin@gruplomi.com'] },
+  { id: 2, descripcion: 'Cambio filtros', tipo_alerta: 'trimestral', proxima_alerta: '2025-12-31', cliente: 'Cliente C', estado: 'activo', fecha_creacion: '2025-09-15', primera_alerta: '2025-09-30', alertas_email: ['admin@gruplomi.com'] },
+  { id: 3, descripcion: 'Revisión anual', tipo_alerta: 'anual', proxima_alerta: '2026-01-15', cliente: 'Cliente D', estado: 'activo', fecha_creacion: '2025-01-01', primera_alerta: '2025-01-15', alertas_email: ['admin@gruplomi.com'] }
 ]
 
 const verifyToken = (req, res, next) => {
@@ -287,7 +287,7 @@ app.get('/mantenimientos/activos', verifyToken, (req, res) => {
 })
 
 app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
-  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
+  const { descripcion, tipo_alerta, cliente, estado, fecha_creacion, primera_alerta, alertas_email } = req.body
   if (!descripcion || !tipo_alerta || !cliente || !primera_alerta) {
     return res.status(400).json({ error: 'Missing required fields: descripcion, tipo_alerta, cliente, primera_alerta' })
   }
@@ -300,6 +300,7 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
     tipo_alerta,
     cliente,
     estado: estado || 'activo',
+    fecha_creacion: fecha_creacion || new Date().toISOString().split('T')[0],
     primera_alerta: primera_alerta,
     proxima_alerta: calcularProximaAlerta(tipo_alerta, primera_alerta),
     alertas_email: alertas_email || []
