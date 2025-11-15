@@ -32,6 +32,10 @@ let configuracion = {
     color_primario: '#0071e3',
     color_secundario: '#0066cc'
   },
+  bienvenida: {
+    titulo: 'GrupLomi Horas',
+    subtitulo: 'Sistema de Control de Horas'
+  },
   idioma: {
     idioma_principal: 'es',
     traducciones: {}
@@ -439,6 +443,16 @@ app.put('/configuracion/empresa', verifyToken, (req, res) => {
   if (color_primario) configuracion.empresa.color_primario = color_primario
   if (color_secundario) configuracion.empresa.color_secundario = color_secundario
   res.json(configuracion.empresa)
+})
+
+app.put('/configuracion/bienvenida', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized' })
+  }
+  const { titulo, subtitulo } = req.body
+  if (titulo) configuracion.bienvenida.titulo = titulo
+  if (subtitulo) configuracion.bienvenida.subtitulo = subtitulo
+  res.json(configuracion.bienvenida)
 })
 
 app.put('/configuracion/idioma', verifyToken, (req, res) => {
