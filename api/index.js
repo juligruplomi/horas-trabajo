@@ -50,7 +50,7 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de usuarios
+    // Crear tabla de usuarios CON PERSISTENCIA
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS usuarios_horas (
         id SERIAL PRIMARY KEY,
@@ -122,6 +122,15 @@ async function initDatabase() {
       )
     `)
     
+    // Crear tabla de roles
+    await dbQuery(`
+      CREATE TABLE IF NOT EXISTS roles_horas (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(50) UNIQUE NOT NULL,
+        permisos JSONB DEFAULT '[]'
+      )
+    `)
+    
     console.log('✅ Database tables initialized')
     
     // Cargar configuración desde DB si existe
@@ -131,22 +140,106 @@ async function initDatabase() {
       console.log('✅ Configuration loaded from database')
     }
     
+    // Cargar usuarios desde DB
+    await loadUsersFromDB()
+    
+    // Cargar roles desde DB
+    await loadRolesFromDB()
+    
   } catch (error) {
     console.error('Database init error:', error)
+  }
+}
+
+// ===== CARGAR USUARIOS DESDE DB =====
+async function loadUsersFromDB() {
+  try {
+    const dbUsers = await dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id')
+    if (dbUsers && dbUsers.length > 0) {
+      usuarios = dbUsers.map(u => ({
+        id: u.id,
+        email: u.email,
+        nombre: u.nombre,
+        role: u.role,
+        password: u.password,
+        activo: u.activo
+      }))
+      console.log(`✅ Loaded ${usuarios.length} users from database`)
+    } else {
+      // Insertar usuarios por defecto si no existen
+      console.log('📝 No users found, creating defaults...')
+      for (const user of usuarios) {
+        await dbQuery(
+          'INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING',
+          [user.email, user.nombre, user.role, user.password]
+        )
+      }
+      // Recargar usuarios con IDs de la DB
+      const reloaded = await dbQuery('SELECT * FROM usuarios_horas ORDER BY id')
+      if (reloaded && reloaded.length > 0) {
+        usuarios = reloaded.map(u => ({
+          id: u.id,
+          email: u.email,
+          nombre: u.nombre,
+          role: u.role,
+          password: u.password,
+          activo: u.activo !== false
+        }))
+      }
+      console.log('✅ Default users created in database')
+    }
+  } catch (error) {
+    console.error('Error loading users:', error)
+  }
+}
+
+// ===== CARGAR ROLES DESDE DB =====
+async function loadRolesFromDB() {
+  try {
+    const dbRoles = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
+    if (dbRoles && dbRoles.length > 0) {
+      roles = dbRoles.map(r => ({
+        id: r.id,
+        nombre: r.nombre,
+        permisos: r.permisos || []
+      }))
+      console.log(`✅ Loaded ${roles.length} roles from database`)
+    } else {
+      // Insertar roles por defecto
+      console.log('📝 No roles found, creating defaults...')
+      for (const role of roles) {
+        await dbQuery(
+          'INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) ON CONFLICT (nombre) DO NOTHING',
+          [role.nombre, JSON.stringify(role.permisos)]
+        )
+      }
+      // Recargar roles con IDs de la DB
+      const reloaded = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
+      if (reloaded && reloaded.length > 0) {
+        roles = reloaded.map(r => ({
+          id: r.id,
+          nombre: r.nombre,
+          permisos: r.permisos || []
+        }))
+      }
+      console.log('✅ Default roles created in database')
+    }
+  } catch (error) {
+    console.error('Error loading roles:', error)
   }
 }
 
 // Inicializar DB al arrancar
 initDatabase()
 
-// ===== DATOS EN MEMORIA (FALLBACK) =====
+// ===== DATOS EN MEMORIA (FALLBACK + DEFAULTS) =====
 let usuarios = [
   { id: 1, email: 'admin@gruplomi.com', nombre: 'Admin', role: 'admin', password: bcrypt.hashSync('Admin2025!', 10) },
   { id: 2, email: 'supervisor@gruplomi.com', nombre: 'Supervisor', role: 'supervisor', password: bcrypt.hashSync('Sup2025!', 10) },
   { id: 3, email: 'juan@gruplomi.com', nombre: 'Juan Lopez', role: 'operario', password: bcrypt.hashSync('Juan2025!', 10) }
 ]
 
-const roles = [
+let roles = [
   { id: 1, nombre: 'admin', permisos: ['agregar_horas', 'editar_horas', 'eliminar_horas', 'supervisar_horas', 'editar_horas_otros', 'visualizar_horas_otros', 'editar_configuracion', 'gestionar_usuarios'] },
   { id: 2, nombre: 'supervisor', permisos: ['agregar_horas', 'editar_horas', 'eliminar_horas', 'supervisar_horas', 'editar_horas_otros', 'visualizar_horas_otros'] },
   { id: 3, nombre: 'operario', permisos: ['agregar_horas', 'editar_horas', 'eliminar_horas'] }
@@ -175,28 +268,10 @@ let configuracion = {
   }
 }
 
-let horas = [
-  { id: 1, usuario_id: 3, fecha: '2025-11-10', tipo_trabajo: 'Averia', numero_aviso: 'AV-2025-0001', horas: 8, descripcion: 'Reparacion', estado: 'validado' },
-  { id: 2, usuario_id: 3, fecha: '2025-11-09', tipo_trabajo: 'Obra', numero_aviso: 'OB-2025-0042', horas: 6, descripcion: 'Construccion', estado: 'pendiente' }
-]
-
-let avisos = [
-  { id: 1, numero: 'AV-2025-0001', cliente: 'Cliente A', descripcion: 'Avería en línea 3', estado: 'en_curso', fecha_creacion: '2025-11-01', fecha: '2025-11-01', alertas_email: ['admin@gruplomi.com'] },
-  { id: 2, numero: 'AV-2025-0002', cliente: 'Cliente B', descripcion: 'Fuga de agua', estado: 'en_curso', fecha_creacion: '2025-11-05', fecha: '2025-11-05', alertas_email: ['admin@gruplomi.com'] },
-  { id: 3, numero: 'AV-2025-0003', cliente: 'Cliente A', descripcion: 'Motor averiado', estado: 'finalizado', fecha_creacion: '2025-10-20', fecha: '2025-10-20', alertas_email: [] }
-]
-
-let obras = [
-  { id: 1, numero: 'OB-2025-0042', cliente: 'Cliente C', descripcion: 'Construcción nave 2', estado: 'en_curso', fecha_creacion: '2025-10-15', fecha: '2025-10-15', fecha_fin_estimada: '2025-12-15', alertas_email: ['admin@gruplomi.com'] },
-  { id: 2, numero: 'OB-2025-0043', cliente: 'Cliente D', descripcion: 'Reforma local', estado: 'en_curso', fecha_creacion: '2025-11-01', fecha: '2025-11-01', fecha_fin_estimada: '2025-11-30', alertas_email: ['admin@gruplomi.com'] },
-  { id: 3, numero: 'OB-2025-0041', cliente: 'Cliente B', descripcion: 'Cimentación', estado: 'finalizado', fecha_creacion: '2025-08-01', fecha: '2025-08-01', fecha_fin_estimada: '2025-10-01', alertas_email: [] }
-]
-
-let mantenimientos = [
-  { id: 1, descripcion: 'Inspección compresor', tipo_alerta: 'mensual', proxima_alerta: '2025-12-10', cliente: 'Cliente A', estado: 'activo', fecha_creacion: '2025-11-01', primera_alerta: '2025-11-10', alertas_email: ['admin@gruplomi.com'] },
-  { id: 2, descripcion: 'Cambio filtros', tipo_alerta: 'trimestral', proxima_alerta: '2025-12-31', cliente: 'Cliente C', estado: 'activo', fecha_creacion: '2025-09-15', primera_alerta: '2025-09-30', alertas_email: ['admin@gruplomi.com'] },
-  { id: 3, descripcion: 'Revisión anual', tipo_alerta: 'anual', proxima_alerta: '2026-01-15', cliente: 'Cliente D', estado: 'activo', fecha_creacion: '2025-01-01', primera_alerta: '2025-01-15', alertas_email: ['admin@gruplomi.com'] }
-]
+let horas = []
+let avisos = []
+let obras = []
+let mantenimientos = []
 
 // ===== MIDDLEWARES =====
 const verifyToken = (req, res, next) => {
@@ -218,12 +293,45 @@ const verifyAdmin = (req, res, next) => {
   next()
 }
 
+// ===== ENDPOINT PÚBLICO: CONFIGURACIÓN DE BIENVENIDA (SIN AUTH) =====
+app.get('/config/public', async (req, res) => {
+  try {
+    const dbConfig = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
+    if (dbConfig && dbConfig.length > 0) {
+      const config = dbConfig[0].valor
+      res.json({
+        bienvenida: config.bienvenida || configuracion.bienvenida,
+        empresa: {
+          nombre: config.empresa?.nombre || configuracion.empresa.nombre,
+          logo: config.empresa?.logo || configuracion.empresa.logo
+        }
+      })
+    } else {
+      res.json({
+        bienvenida: configuracion.bienvenida,
+        empresa: {
+          nombre: configuracion.empresa.nombre,
+          logo: configuracion.empresa.logo
+        }
+      })
+    }
+  } catch (error) {
+    res.json({
+      bienvenida: configuracion.bienvenida,
+      empresa: {
+        nombre: configuracion.empresa.nombre,
+        logo: configuracion.empresa.logo
+      }
+    })
+  }
+})
+
 // ===== AUTH ENDPOINTS =====
 app.post('/auth/login', (req, res) => {
   const { email, password } = req.body
   const usuario = usuarios.find(u => u.email === email)
   if (!usuario || !bcrypt.compareSync(password, usuario.password)) {
-    return res.status(401).json({ error: 'Invalid credentials' })
+    return res.status(401).json({ error: 'Credenciales inválidas' })
   }
   const token = jwt.sign({ id: usuario.id, email: usuario.email, role: usuario.role, nombre: usuario.nombre }, JWT_SECRET, { expiresIn: '24h' })
   res.json({ token, user: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role } })
@@ -238,7 +346,6 @@ app.get('/auth/me', verifyToken, (req, res) => {
 // ===== HORAS ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/horas', verifyToken, async (req, res) => {
   try {
-    // Intentar desde DB primero
     let dbHoras = []
     if (req.user.role === 'admin' || req.user.role === 'supervisor') {
       dbHoras = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC')
@@ -249,27 +356,21 @@ app.get('/horas', verifyToken, async (req, res) => {
     if (dbHoras && dbHoras.length > 0) {
       res.json(dbHoras)
     } else {
-      // Fallback a datos en memoria
-      let result = horas
-      if (req.user.role === 'operario') {
-        result = horas.filter(h => h.usuario_id === req.user.id)
-      }
-      res.json(result)
+      res.json([])
     }
   } catch (error) {
     console.error('Error fetching horas:', error)
-    res.json(horas)
+    res.json([])
   }
 })
 
 app.post('/horas', verifyToken, async (req, res) => {
   const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion } = req.body
   if (!fecha || !tipo_trabajo || !numero_aviso || !cant_horas) {
-    return res.status(400).json({ error: 'Missing required fields: fecha, tipo_trabajo, numero_aviso, horas' })
+    return res.status(400).json({ error: 'Campos requeridos: fecha, tipo_trabajo, numero_aviso, horas' })
   }
   
   try {
-    // Intentar guardar en DB
     const result = await dbQuery(
       'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
       [req.user.id, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '']
@@ -278,35 +379,11 @@ app.post('/horas', verifyToken, async (req, res) => {
     if (result && result.length > 0) {
       res.status(201).json(result[0])
     } else {
-      // Fallback: guardar en memoria
-      const newHora = {
-        id: Math.max(...horas.map(h => h.id), 0) + 1,
-        usuario_id: req.user.id,
-        fecha,
-        tipo_trabajo,
-        numero_aviso,
-        horas: parseFloat(cant_horas),
-        descripcion: descripcion || '',
-        estado: 'pendiente'
-      }
-      horas.push(newHora)
-      res.status(201).json(newHora)
+      res.status(500).json({ error: 'Error al guardar en la base de datos' })
     }
   } catch (error) {
     console.error('Error creating hora:', error)
-    // Fallback en memoria
-    const newHora = {
-      id: Math.max(...horas.map(h => h.id), 0) + 1,
-      usuario_id: req.user.id,
-      fecha,
-      tipo_trabajo,
-      numero_aviso,
-      horas: parseFloat(cant_horas),
-      descripcion: descripcion || '',
-      estado: 'pendiente'
-    }
-    horas.push(newHora)
-    res.status(201).json(newHora)
+    res.status(500).json({ error: 'Error al crear el registro' })
   }
 })
 
@@ -315,34 +392,25 @@ app.put('/horas/:id', verifyToken, async (req, res) => {
   const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, estado } = req.body
   
   try {
-    // Intentar actualizar en DB
+    // Verificar permisos
+    const existing = await dbQuery('SELECT usuario_id FROM horas_trabajo WHERE id = $1', [horaId])
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' })
+    }
+    
+    if (existing[0].usuario_id !== req.user.id && req.user.role === 'operario') {
+      return res.status(403).json({ error: 'No autorizado' })
+    }
+    
     const result = await dbQuery(
-      'UPDATE horas_trabajo SET fecha=$1, tipo_trabajo=$2, numero_aviso=$3, horas=$4, descripcion=$5, estado=$6 WHERE id=$7 AND usuario_id=$8 RETURNING *',
-      [fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion, estado || 'pendiente', horaId, req.user.id]
+      'UPDATE horas_trabajo SET fecha=$1, tipo_trabajo=$2, numero_aviso=$3, horas=$4, descripcion=$5, estado=$6 WHERE id=$7 RETURNING *',
+      [fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion, estado || 'pendiente', horaId]
     )
     
     if (result && result.length > 0) {
       res.json(result[0])
     } else {
-      // Fallback: actualizar en memoria
-      const horaIdx = horas.findIndex(h => h.id === horaId)
-      if (horaIdx === -1) return res.status(404).json({ error: 'Hora not found' })
-      
-      const hora = horas[horaIdx]
-      if (hora.usuario_id !== req.user.id && req.user.role === 'operario') {
-        return res.status(403).json({ error: 'Not authorized' })
-      }
-      
-      horas[horaIdx] = {
-        ...hora,
-        fecha: fecha || hora.fecha,
-        tipo_trabajo: tipo_trabajo || hora.tipo_trabajo,
-        numero_aviso: numero_aviso || hora.numero_aviso,
-        horas: cant_horas ? parseFloat(cant_horas) : hora.horas,
-        descripcion: descripcion || hora.descripcion,
-        estado: estado || hora.estado
-      }
-      res.json(horas[horaIdx])
+      res.status(500).json({ error: 'Error al actualizar' })
     }
   } catch (error) {
     console.error('Error updating hora:', error)
@@ -354,303 +422,458 @@ app.delete('/horas/:id', verifyToken, async (req, res) => {
   const horaId = parseInt(req.params.id)
   
   try {
-    // Intentar eliminar de DB
-    const result = await dbQuery(
-      'DELETE FROM horas_trabajo WHERE id=$1 AND usuario_id=$2 RETURNING id',
-      [horaId, req.user.id]
-    )
-    
-    if (result && result.length > 0) {
-      res.json({ message: 'Deleted' })
-    } else {
-      // Fallback: eliminar de memoria
-      const horaIdx = horas.findIndex(h => h.id === horaId)
-      if (horaIdx === -1) return res.status(404).json({ error: 'Hora not found' })
-      
-      const hora = horas[horaIdx]
-      if (hora.usuario_id !== req.user.id && req.user.role === 'operario') {
-        return res.status(403).json({ error: 'Not authorized' })
-      }
-      
-      horas.splice(horaIdx, 1)
-      res.json({ message: 'Deleted' })
+    // Verificar permisos
+    const existing = await dbQuery('SELECT usuario_id FROM horas_trabajo WHERE id = $1', [horaId])
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' })
     }
+    
+    if (existing[0].usuario_id !== req.user.id && req.user.role === 'operario') {
+      return res.status(403).json({ error: 'No autorizado' })
+    }
+    
+    await dbQuery('DELETE FROM horas_trabajo WHERE id=$1', [horaId])
+    res.json({ message: 'Eliminado correctamente' })
   } catch (error) {
     console.error('Error deleting hora:', error)
     res.status(500).json({ error: 'Error al eliminar' })
   }
 })
 
-app.put('/horas/:id/validar', verifyToken, (req, res) => {
+app.put('/horas/:id/validar', verifyToken, async (req, res) => {
   if (req.user.role === 'operario') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
-  const horaIdx = horas.findIndex(h => h.id === parseInt(req.params.id))
-  if (horaIdx === -1) return res.status(404).json({ error: 'Hora not found' })
+  
+  const horaId = parseInt(req.params.id)
   const { estado } = req.body
-  horas[horaIdx].estado = estado === 'validado' ? 'validado' : 'rechazado'
-  res.json(horas[horaIdx])
+  const nuevoEstado = estado === 'validado' ? 'validado' : 'rechazado'
+  
+  try {
+    const result = await dbQuery(
+      'UPDATE horas_trabajo SET estado = $1 WHERE id = $2 RETURNING *',
+      [nuevoEstado, horaId]
+    )
+    
+    if (result && result.length > 0) {
+      res.json(result[0])
+    } else {
+      res.status(404).json({ error: 'Registro no encontrado' })
+    }
+  } catch (error) {
+    console.error('Error validating hora:', error)
+    res.status(500).json({ error: 'Error al validar' })
+  }
 })
 
-// ===== AVISOS ENDPOINTS =====
-app.get('/avisos', verifyToken, (req, res) => {
-  res.json(avisos)
+// ===== AVISOS ENDPOINTS (CON PERSISTENCIA) =====
+app.get('/avisos', verifyToken, async (req, res) => {
+  try {
+    const dbAvisos = await dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC')
+    res.json(dbAvisos || [])
+  } catch (error) {
+    res.json([])
+  }
 })
 
-app.get('/avisos/activos', verifyToken, (req, res) => {
-  res.json(avisos.filter(a => a.estado === 'en_curso'))
+app.get('/avisos/activos', verifyToken, async (req, res) => {
+  try {
+    const dbAvisos = await dbQuery("SELECT * FROM avisos_trabajo WHERE estado = 'en_curso' ORDER BY id DESC")
+    res.json(dbAvisos || [])
+  } catch (error) {
+    res.json([])
+  }
 })
 
-app.post('/avisos', verifyToken, verifyAdmin, (req, res) => {
+app.post('/avisos', verifyToken, verifyAdmin, async (req, res) => {
   const { numero, cliente, descripcion, estado, fecha, alertas_email } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
-    return res.status(400).json({ error: 'Missing required fields: numero, cliente, descripcion, fecha' })
+    return res.status(400).json({ error: 'Campos requeridos: numero, cliente, descripcion, fecha' })
   }
-  const newAviso = {
-    id: Math.max(...avisos.map(a => a.id), 0) + 1,
-    numero,
-    cliente,
-    descripcion,
-    estado: estado || 'en_curso',
-    fecha_creacion: new Date().toISOString().split('T')[0],
-    fecha: fecha,
-    alertas_email: alertas_email || []
+  
+  try {
+    const result = await dbQuery(
+      'INSERT INTO avisos_trabajo (numero, cliente, descripcion, estado, fecha, alertas_email) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [numero, cliente, descripcion, estado || 'en_curso', fecha, JSON.stringify(alertas_email || [])]
+    )
+    
+    if (result && result.length > 0) {
+      res.status(201).json(result[0])
+    } else {
+      res.status(500).json({ error: 'Error al crear aviso' })
+    }
+  } catch (error) {
+    console.error('Error creating aviso:', error)
+    res.status(500).json({ error: 'Error al crear aviso' })
   }
-  avisos.push(newAviso)
-  res.status(201).json(newAviso)
 })
 
-app.put('/avisos/:id', verifyToken, verifyAdmin, (req, res) => {
-  const avisoIdx = avisos.findIndex(a => a.id === parseInt(req.params.id))
-  if (avisoIdx === -1) return res.status(404).json({ error: 'Aviso not found' })
+app.put('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
+  const avisoId = parseInt(req.params.id)
   const { numero, cliente, descripcion, estado, fecha, alertas_email } = req.body
-  avisos[avisoIdx] = {
-    ...avisos[avisoIdx],
-    numero: numero || avisos[avisoIdx].numero,
-    cliente: cliente || avisos[avisoIdx].cliente,
-    descripcion: descripcion || avisos[avisoIdx].descripcion,
-    estado: estado || avisos[avisoIdx].estado,
-    fecha: fecha || avisos[avisoIdx].fecha,
-    alertas_email: alertas_email !== undefined ? alertas_email : avisos[avisoIdx].alertas_email
+  
+  try {
+    const result = await dbQuery(
+      'UPDATE avisos_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, alertas_email=$6 WHERE id=$7 RETURNING *',
+      [numero, cliente, descripcion, estado, fecha, JSON.stringify(alertas_email || []), avisoId]
+    )
+    
+    if (result && result.length > 0) {
+      res.json(result[0])
+    } else {
+      res.status(404).json({ error: 'Aviso no encontrado' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Error al actualizar aviso' })
   }
-  res.json(avisos[avisoIdx])
 })
 
-app.delete('/avisos/:id', verifyToken, verifyAdmin, (req, res) => {
-  const avisoIdx = avisos.findIndex(a => a.id === parseInt(req.params.id))
-  if (avisoIdx === -1) return res.status(404).json({ error: 'Aviso not found' })
-  avisos.splice(avisoIdx, 1)
-  res.json({ message: 'Deleted' })
+app.delete('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await dbQuery('DELETE FROM avisos_trabajo WHERE id = $1', [parseInt(req.params.id)])
+    res.json({ message: 'Eliminado' })
+  } catch (error) {
+    res.status(500).json({ error: 'Error al eliminar' })
+  }
 })
 
-// ===== OBRAS ENDPOINTS =====
-app.get('/obras', verifyToken, (req, res) => {
-  res.json(obras)
+// ===== OBRAS ENDPOINTS (CON PERSISTENCIA) =====
+app.get('/obras', verifyToken, async (req, res) => {
+  try {
+    const dbObras = await dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC')
+    res.json(dbObras || [])
+  } catch (error) {
+    res.json([])
+  }
 })
 
-app.get('/obras/activas', verifyToken, (req, res) => {
-  res.json(obras.filter(o => o.estado === 'en_curso'))
+app.get('/obras/activas', verifyToken, async (req, res) => {
+  try {
+    const dbObras = await dbQuery("SELECT * FROM obras_trabajo WHERE estado = 'en_curso' ORDER BY id DESC")
+    res.json(dbObras || [])
+  } catch (error) {
+    res.json([])
+  }
 })
 
-app.post('/obras', verifyToken, verifyAdmin, (req, res) => {
+app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
   const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
-    return res.status(400).json({ error: 'Missing required fields: numero, cliente, descripcion, fecha' })
+    return res.status(400).json({ error: 'Campos requeridos: numero, cliente, descripcion, fecha' })
   }
-  const newObra = {
-    id: Math.max(...obras.map(o => o.id), 0) + 1,
-    numero,
-    cliente,
-    descripcion,
-    estado: estado || 'en_curso',
-    fecha_creacion: new Date().toISOString().split('T')[0],
-    fecha: fecha,
-    fecha_fin_estimada: fecha_fin_estimada || null,
-    alertas_email: alertas_email || []
+  
+  try {
+    const result = await dbQuery(
+      'INSERT INTO obras_trabajo (numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [numero, cliente, descripcion, estado || 'en_curso', fecha, fecha_fin_estimada || null, JSON.stringify(alertas_email || [])]
+    )
+    
+    if (result && result.length > 0) {
+      res.status(201).json(result[0])
+    } else {
+      res.status(500).json({ error: 'Error al crear obra' })
+    }
+  } catch (error) {
+    console.error('Error creating obra:', error)
+    res.status(500).json({ error: 'Error al crear obra' })
   }
-  obras.push(newObra)
-  res.status(201).json(newObra)
 })
 
-app.put('/obras/:id', verifyToken, verifyAdmin, (req, res) => {
-  const obraIdx = obras.findIndex(o => o.id === parseInt(req.params.id))
-  if (obraIdx === -1) return res.status(404).json({ error: 'Obra not found' })
+app.put('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
+  const obraId = parseInt(req.params.id)
   const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email } = req.body
-  obras[obraIdx] = {
-    ...obras[obraIdx],
-    numero: numero || obras[obraIdx].numero,
-    cliente: cliente || obras[obraIdx].cliente,
-    descripcion: descripcion || obras[obraIdx].descripcion,
-    estado: estado || obras[obraIdx].estado,
-    fecha: fecha || obras[obraIdx].fecha,
-    fecha_fin_estimada: fecha_fin_estimada || obras[obraIdx].fecha_fin_estimada,
-    alertas_email: alertas_email !== undefined ? alertas_email : obras[obraIdx].alertas_email
+  
+  try {
+    const result = await dbQuery(
+      'UPDATE obras_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, fecha_fin_estimada=$6, alertas_email=$7 WHERE id=$8 RETURNING *',
+      [numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, JSON.stringify(alertas_email || []), obraId]
+    )
+    
+    if (result && result.length > 0) {
+      res.json(result[0])
+    } else {
+      res.status(404).json({ error: 'Obra no encontrada' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Error al actualizar obra' })
   }
-  res.json(obras[obraIdx])
 })
 
-app.delete('/obras/:id', verifyToken, verifyAdmin, (req, res) => {
-  const obraIdx = obras.findIndex(o => o.id === parseInt(req.params.id))
-  if (obraIdx === -1) return res.status(404).json({ error: 'Obra not found' })
-  obras.splice(obraIdx, 1)
-  res.json({ message: 'Deleted' })
+app.delete('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await dbQuery('DELETE FROM obras_trabajo WHERE id = $1', [parseInt(req.params.id)])
+    res.json({ message: 'Eliminado' })
+  } catch (error) {
+    res.status(500).json({ error: 'Error al eliminar' })
+  }
 })
 
-// ===== MANTENIMIENTOS ENDPOINTS =====
-app.get('/mantenimientos', verifyToken, (req, res) => {
-  res.json(mantenimientos)
+// ===== MANTENIMIENTOS ENDPOINTS (CON PERSISTENCIA) =====
+app.get('/mantenimientos', verifyToken, async (req, res) => {
+  try {
+    const dbMant = await dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC')
+    res.json(dbMant || [])
+  } catch (error) {
+    res.json([])
+  }
 })
 
-app.get('/mantenimientos/activos', verifyToken, (req, res) => {
-  res.json(mantenimientos.filter(m => m.estado === 'activo'))
+app.get('/mantenimientos/activos', verifyToken, async (req, res) => {
+  try {
+    const dbMant = await dbQuery("SELECT * FROM mantenimientos_trabajo WHERE estado = 'activo' ORDER BY id DESC")
+    res.json(dbMant || [])
+  } catch (error) {
+    res.json([])
+  }
 })
 
-app.post('/mantenimientos', verifyToken, verifyAdmin, (req, res) => {
-  const { descripcion, tipo_alerta, cliente, estado, fecha_creacion, primera_alerta, alertas_email } = req.body
+app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
+  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
   if (!descripcion || !tipo_alerta || !cliente || !primera_alerta) {
-    return res.status(400).json({ error: 'Missing required fields: descripcion, tipo_alerta, cliente, primera_alerta' })
+    return res.status(400).json({ error: 'Campos requeridos: descripcion, tipo_alerta, cliente, primera_alerta' })
   }
   if (!['semanal', 'mensual', 'trimestral', 'anual'].includes(tipo_alerta)) {
-    return res.status(400).json({ error: 'tipo_alerta must be: semanal, mensual, trimestral, anual' })
+    return res.status(400).json({ error: 'tipo_alerta debe ser: semanal, mensual, trimestral, anual' })
   }
-  const newMant = {
-    id: Math.max(...mantenimientos.map(m => m.id), 0) + 1,
-    descripcion,
-    tipo_alerta,
-    cliente,
-    estado: estado || 'activo',
-    fecha_creacion: fecha_creacion || new Date().toISOString().split('T')[0],
-    primera_alerta: primera_alerta,
-    proxima_alerta: calcularProximaAlerta(tipo_alerta, primera_alerta),
-    alertas_email: alertas_email || []
+  
+  const proxima_alerta = calcularProximaAlerta(tipo_alerta, primera_alerta)
+  
+  try {
+    const result = await dbQuery(
+      'INSERT INTO mantenimientos_trabajo (descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, alertas_email) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado || 'activo', JSON.stringify(alertas_email || [])]
+    )
+    
+    if (result && result.length > 0) {
+      res.status(201).json(result[0])
+    } else {
+      res.status(500).json({ error: 'Error al crear mantenimiento' })
+    }
+  } catch (error) {
+    console.error('Error creating mantenimiento:', error)
+    res.status(500).json({ error: 'Error al crear mantenimiento' })
   }
-  mantenimientos.push(newMant)
-  res.status(201).json(newMant)
 })
 
-app.put('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
-  const mantIdx = mantenimientos.findIndex(m => m.id === parseInt(req.params.id))
-  if (mantIdx === -1) return res.status(404).json({ error: 'Mantenimiento not found' })
+app.put('/mantenimientos/:id', verifyToken, verifyAdmin, async (req, res) => {
+  const mantId = parseInt(req.params.id)
   const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
-  mantenimientos[mantIdx] = {
-    ...mantenimientos[mantIdx],
-    descripcion: descripcion || mantenimientos[mantIdx].descripcion,
-    tipo_alerta: tipo_alerta || mantenimientos[mantIdx].tipo_alerta,
-    cliente: cliente || mantenimientos[mantIdx].cliente,
-    estado: estado || mantenimientos[mantIdx].estado,
-    primera_alerta: primera_alerta || mantenimientos[mantIdx].primera_alerta,
-    proxima_alerta: tipo_alerta ? calcularProximaAlerta(tipo_alerta, primera_alerta || mantenimientos[mantIdx].primera_alerta) : mantenimientos[mantIdx].proxima_alerta,
-    alertas_email: alertas_email !== undefined ? alertas_email : mantenimientos[mantIdx].alertas_email
+  
+  const proxima_alerta = tipo_alerta && primera_alerta ? calcularProximaAlerta(tipo_alerta, primera_alerta) : null
+  
+  try {
+    const result = await dbQuery(
+      'UPDATE mantenimientos_trabajo SET descripcion=$1, cliente=$2, tipo_alerta=$3, primera_alerta=$4, proxima_alerta=COALESCE($5, proxima_alerta), estado=$6, alertas_email=$7 WHERE id=$8 RETURNING *',
+      [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, JSON.stringify(alertas_email || []), mantId]
+    )
+    
+    if (result && result.length > 0) {
+      res.json(result[0])
+    } else {
+      res.status(404).json({ error: 'Mantenimiento no encontrado' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Error al actualizar mantenimiento' })
   }
-  res.json(mantenimientos[mantIdx])
 })
 
-app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
-  const mantIdx = mantenimientos.findIndex(m => m.id === parseInt(req.params.id))
-  if (mantIdx === -1) return res.status(404).json({ error: 'Mantenimiento not found' })
-  mantenimientos.splice(mantIdx, 1)
-  res.json({ message: 'Deleted' })
+app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await dbQuery('DELETE FROM mantenimientos_trabajo WHERE id = $1', [parseInt(req.params.id)])
+    res.json({ message: 'Eliminado' })
+  } catch (error) {
+    res.status(500).json({ error: 'Error al eliminar' })
+  }
 })
 
-// ===== USUARIOS ENDPOINTS =====
-app.get('/usuarios', verifyToken, (req, res) => {
+// ===== USUARIOS ENDPOINTS (CON PERSISTENCIA) =====
+app.get('/usuarios', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
-  res.json(usuarios.map(u => ({
-    id: u.id,
-    email: u.email,
-    nombre: u.nombre,
-    role: u.role,
-    activo: true
-  })))
+  
+  try {
+    const dbUsers = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas ORDER BY id')
+    if (dbUsers && dbUsers.length > 0) {
+      res.json(dbUsers)
+    } else {
+      res.json(usuarios.map(u => ({
+        id: u.id,
+        email: u.email,
+        nombre: u.nombre,
+        role: u.role,
+        activo: true
+      })))
+    }
+  } catch (error) {
+    res.json(usuarios.map(u => ({
+      id: u.id,
+      email: u.email,
+      nombre: u.nombre,
+      role: u.role,
+      activo: true
+    })))
+  }
 })
 
-app.post('/usuarios', verifyToken, (req, res) => {
+app.post('/usuarios', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
+  
   const { email, nombre, role, password } = req.body
   if (!email || !nombre || !role) {
-    return res.status(400).json({ error: 'Missing required fields' })
+    return res.status(400).json({ error: 'Campos requeridos: email, nombre, role' })
   }
-  const newUsuario = {
-    id: Math.max(...usuarios.map(u => u.id), 0) + 1,
-    email,
-    nombre,
-    role,
-    password: bcrypt.hashSync(password || 'TempPassword2025!', 10)
+  
+  const hashedPassword = bcrypt.hashSync(password || 'TempPassword2025!', 10)
+  
+  try {
+    const result = await dbQuery(
+      'INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) RETURNING id, email, nombre, role, activo',
+      [email, nombre, role, hashedPassword]
+    )
+    
+    if (result && result.length > 0) {
+      // Actualizar array en memoria
+      usuarios.push({
+        id: result[0].id,
+        email,
+        nombre,
+        role,
+        password: hashedPassword
+      })
+      res.status(201).json(result[0])
+    } else {
+      res.status(500).json({ error: 'Error al crear usuario' })
+    }
+  } catch (error) {
+    console.error('Error creating user:', error)
+    res.status(500).json({ error: 'Error al crear usuario (email duplicado?)' })
   }
-  usuarios.push(newUsuario)
-  res.status(201).json({
-    id: newUsuario.id,
-    email: newUsuario.email,
-    nombre: newUsuario.nombre,
-    role: newUsuario.role
-  })
 })
 
-app.put('/usuarios/:id', verifyToken, (req, res) => {
+app.put('/usuarios/:id', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
-  const usuarioIdx = usuarios.findIndex(u => u.id === parseInt(req.params.id))
-  if (usuarioIdx === -1) return res.status(404).json({ error: 'Usuario not found' })
   
+  const userId = parseInt(req.params.id)
   const { email, nombre, role, password } = req.body
-  if (email) usuarios[usuarioIdx].email = email
-  if (nombre) usuarios[usuarioIdx].nombre = nombre
-  if (role) usuarios[usuarioIdx].role = role
-  if (password) usuarios[usuarioIdx].password = bcrypt.hashSync(password, 10)
   
-  res.json({
-    id: usuarios[usuarioIdx].id,
-    email: usuarios[usuarioIdx].email,
-    nombre: usuarios[usuarioIdx].nombre,
-    role: usuarios[usuarioIdx].role
-  })
+  try {
+    let query, params
+    
+    if (password) {
+      const hashedPassword = bcrypt.hashSync(password, 10)
+      query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, password=$4 WHERE id=$5 RETURNING id, email, nombre, role, activo'
+      params = [email, nombre, role, hashedPassword, userId]
+    } else {
+      query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3 WHERE id=$4 RETURNING id, email, nombre, role, activo'
+      params = [email, nombre, role, userId]
+    }
+    
+    const result = await dbQuery(query, params)
+    
+    if (result && result.length > 0) {
+      // Actualizar array en memoria
+      const idx = usuarios.findIndex(u => u.id === userId)
+      if (idx !== -1) {
+        usuarios[idx].email = email
+        usuarios[idx].nombre = nombre
+        usuarios[idx].role = role
+        if (password) usuarios[idx].password = bcrypt.hashSync(password, 10)
+      }
+      res.json(result[0])
+    } else {
+      res.status(404).json({ error: 'Usuario no encontrado' })
+    }
+  } catch (error) {
+    console.error('Error updating user:', error)
+    res.status(500).json({ error: 'Error al actualizar usuario' })
+  }
 })
 
-app.delete('/usuarios/:id', verifyToken, (req, res) => {
+app.delete('/usuarios/:id', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
-  const usuarioIdx = usuarios.findIndex(u => u.id === parseInt(req.params.id))
-  if (usuarioIdx === -1) return res.status(404).json({ error: 'Usuario not found' })
-  usuarios.splice(usuarioIdx, 1)
-  res.json({ message: 'Usuario deleted' })
-})
-
-// ===== ROLES ENDPOINTS =====
-app.get('/roles', verifyToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
-  }
-  res.json(roles)
-})
-
-app.put('/roles/:id', verifyToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
-  }
-  const rolIdx = roles.findIndex(r => r.id === parseInt(req.params.id))
-  if (rolIdx === -1) return res.status(404).json({ error: 'Rol not found' })
   
+  const userId = parseInt(req.params.id)
+  
+  try {
+    // Soft delete: marcar como inactivo
+    await dbQuery('UPDATE usuarios_horas SET activo = false WHERE id = $1', [userId])
+    
+    // Actualizar array en memoria
+    usuarios = usuarios.filter(u => u.id !== userId)
+    
+    res.json({ message: 'Usuario eliminado' })
+  } catch (error) {
+    console.error('Error deleting user:', error)
+    res.status(500).json({ error: 'Error al eliminar usuario' })
+  }
+})
+
+// ===== ROLES ENDPOINTS (CON PERSISTENCIA) =====
+app.get('/roles', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  try {
+    const dbRoles = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
+    if (dbRoles && dbRoles.length > 0) {
+      res.json(dbRoles)
+    } else {
+      res.json(roles)
+    }
+  } catch (error) {
+    res.json(roles)
+  }
+})
+
+app.put('/roles/:id', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  const roleId = parseInt(req.params.id)
   const { permisos } = req.body
-  if (Array.isArray(permisos)) {
-    roles[rolIdx].permisos = permisos
+  
+  if (!Array.isArray(permisos)) {
+    return res.status(400).json({ error: 'permisos debe ser un array' })
   }
-  res.json(roles[rolIdx])
+  
+  try {
+    const result = await dbQuery(
+      'UPDATE roles_horas SET permisos = $1 WHERE id = $2 RETURNING *',
+      [JSON.stringify(permisos), roleId]
+    )
+    
+    if (result && result.length > 0) {
+      // Actualizar array en memoria
+      const idx = roles.findIndex(r => r.id === roleId)
+      if (idx !== -1) {
+        roles[idx].permisos = permisos
+      }
+      res.json(result[0])
+    } else {
+      res.status(404).json({ error: 'Rol no encontrado' })
+    }
+  } catch (error) {
+    console.error('Error updating role:', error)
+    res.status(500).json({ error: 'Error al actualizar rol' })
+  }
 })
 
 // ===== CONFIGURACION ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/configuracion', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
   
   try {
-    // Intentar cargar desde DB
     const dbConfig = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
     
     if (dbConfig && dbConfig.length > 0) {
@@ -666,7 +889,7 @@ app.get('/configuracion', verifyToken, async (req, res) => {
 
 app.put('/configuracion/empresa', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
   
   const { nombre, logo, color_primario, color_secundario } = req.body
@@ -676,7 +899,6 @@ app.put('/configuracion/empresa', verifyToken, async (req, res) => {
   if (color_secundario) configuracion.empresa.color_secundario = color_secundario
   
   try {
-    // Guardar en DB
     await dbQuery(
       "INSERT INTO configuracion_horas (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2",
       ['general', JSON.stringify(configuracion)]
@@ -691,7 +913,7 @@ app.put('/configuracion/empresa', verifyToken, async (req, res) => {
 
 app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
   
   const { titulo, subtitulo } = req.body
@@ -699,7 +921,6 @@ app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
   if (subtitulo) configuracion.bienvenida.subtitulo = subtitulo
   
   try {
-    // Guardar en DB
     await dbQuery(
       "INSERT INTO configuracion_horas (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2",
       ['general', JSON.stringify(configuracion)]
@@ -714,7 +935,7 @@ app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
 
 app.put('/configuracion/idioma', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
   
   const { idioma_principal, traducciones } = req.body
@@ -722,7 +943,6 @@ app.put('/configuracion/idioma', verifyToken, async (req, res) => {
   if (traducciones) configuracion.idioma.traducciones = traducciones
   
   try {
-    // Guardar en DB
     await dbQuery(
       "INSERT INTO configuracion_horas (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2",
       ['general', JSON.stringify(configuracion)]
@@ -737,7 +957,7 @@ app.put('/configuracion/idioma', verifyToken, async (req, res) => {
 
 app.put('/configuracion/smtp', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Not authorized' })
+    return res.status(403).json({ error: 'No autorizado' })
   }
   
   const { host, puerto, usuario, contraseña } = req.body
@@ -747,7 +967,6 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
   if (contraseña) configuracion.smtp.contraseña = contraseña
   
   try {
-    // Guardar en DB
     await dbQuery(
       "INSERT INTO configuracion_horas (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2",
       ['general', JSON.stringify(configuracion)]
@@ -762,7 +981,7 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
 
 // ===== HEALTH ENDPOINT =====
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', db: 'connected via proxy', version: '2.0' })
+  res.json({ status: 'ok', db: 'connected via proxy', version: '3.0' })
 })
 
 // ===== TEST DB ENDPOINT =====
@@ -776,7 +995,7 @@ app.get('/test-db', async (req, res) => {
 })
 
 app.use((req, res) => {
-  res.status(404).json({ error: 'Not found' })
+  res.status(404).json({ error: 'Endpoint no encontrado' })
 })
 
 // ===== FUNCIONES AUXILIARES =====
@@ -804,9 +1023,8 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
 
 const PORT = process.env.PORT || 8000
 app.listen(PORT, () => {
-  console.log('🚀 Backend running on port ' + PORT)
-  console.log('✅ Database via proxy enabled')
-  console.log('📦 node-fetch required: npm install node-fetch@2')
+  console.log('🚀 Backend v3.0 running on port ' + PORT)
+  console.log('✅ Full PostgreSQL persistence enabled')
 })
 
 module.exports = app
