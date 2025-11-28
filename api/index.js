@@ -867,6 +867,76 @@ app.put('/roles/:id', verifyToken, async (req, res) => {
   }
 })
 
+// Crear nuevo rol
+app.post('/roles', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  const { nombre, permisos } = req.body
+  
+  if (!nombre || typeof nombre !== 'string') {
+    return res.status(400).json({ error: 'El nombre del rol es obligatorio' })
+  }
+  
+  const nombreNormalizado = nombre.toLowerCase().trim()
+  
+  // Verificar si ya existe
+  const existing = await dbQuery('SELECT id FROM roles_horas WHERE nombre = $1', [nombreNormalizado])
+  if (existing && existing.length > 0) {
+    return res.status(400).json({ error: 'Ya existe un rol con ese nombre' })
+  }
+  
+  try {
+    const result = await dbQuery(
+      'INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) RETURNING *',
+      [nombreNormalizado, JSON.stringify(permisos || [])]
+    )
+    
+    if (result && result.length > 0) {
+      const newRole = {
+        id: result[0].id,
+        nombre: result[0].nombre,
+        permisos: permisos || []
+      }
+      roles.push(newRole)
+      res.status(201).json(newRole)
+    } else {
+      res.status(500).json({ error: 'Error al crear rol' })
+    }
+  } catch (error) {
+    console.error('Error creating role:', error)
+    res.status(500).json({ error: 'Error al crear rol' })
+  }
+})
+
+// Eliminar rol (solo roles personalizados, no admin/supervisor/operario)
+app.delete('/roles/:id', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  const roleId = parseInt(req.params.id)
+  
+  // Verificar que no sea un rol del sistema
+  const roleToDelete = await dbQuery('SELECT nombre FROM roles_horas WHERE id = $1', [roleId])
+  if (roleToDelete && roleToDelete.length > 0) {
+    const roleName = roleToDelete[0].nombre
+    if (['admin', 'supervisor', 'operario'].includes(roleName)) {
+      return res.status(400).json({ error: 'No se pueden eliminar los roles del sistema' })
+    }
+  }
+  
+  try {
+    await dbQuery('DELETE FROM roles_horas WHERE id = $1', [roleId])
+    roles = roles.filter(r => r.id !== roleId)
+    res.json({ message: 'Rol eliminado correctamente' })
+  } catch (error) {
+    console.error('Error deleting role:', error)
+    res.status(500).json({ error: 'Error al eliminar rol' })
+  }
+})
+
 // ===== CONFIGURACION ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/configuracion', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
@@ -981,7 +1051,7 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
 
 // ===== HEALTH ENDPOINT =====
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', db: 'connected via proxy', version: '3.0' })
+  res.json({ status: 'ok', db: 'connected via proxy', version: '3.1' })
 })
 
 // ===== TEST DB ENDPOINT =====
