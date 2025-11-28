@@ -23,26 +23,33 @@ async function dbQuery(text, params = []) {
         'Content-Type': 'application/json',
         'x-api-key': PROXY_API_KEY
       },
-      body: JSON.stringify({ text, params })
+      body: JSON.stringify({ text, params }),
+      timeout: 25000
     })
     
     if (!response.ok) {
-      console.error('Proxy error:', response.status)
-      return []
+      const errorText = await response.text()
+      console.error('Proxy error:', response.status, errorText)
+      throw new Error(`Proxy error: ${response.status} - ${errorText}`)
     }
     
     const data = await response.json()
-    return data.rows || []
+    
+    if (data.error) {
+      console.error('DB Error:', data.error)
+      throw new Error(data.error)
+    }
+    
+    return { rows: data.rows || [], success: true }
   } catch (error) {
     console.error('DB query error:', error.message)
-    return []
+    return { rows: [], success: false, error: error.message }
   }
 }
 
 // ===== INICIALIZAR TABLAS EN LA BASE DE DATOS =====
 async function initDatabase() {
   try {
-    // Crear tabla de configuración
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS configuracion_horas (
         clave VARCHAR(100) PRIMARY KEY,
@@ -50,7 +57,6 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de usuarios CON PERSISTENCIA
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS usuarios_horas (
         id SERIAL PRIMARY KEY,
@@ -63,7 +69,6 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de horas
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS horas_trabajo (
         id SERIAL PRIMARY KEY,
@@ -78,7 +83,6 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de avisos
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS avisos_trabajo (
         id SERIAL PRIMARY KEY,
@@ -92,7 +96,6 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de obras
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS obras_trabajo (
         id SERIAL PRIMARY KEY,
@@ -107,7 +110,6 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de mantenimientos
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (
         id SERIAL PRIMARY KEY,
@@ -122,7 +124,6 @@ async function initDatabase() {
       )
     `)
     
-    // Crear tabla de roles
     await dbQuery(`
       CREATE TABLE IF NOT EXISTS roles_horas (
         id SERIAL PRIMARY KEY,
@@ -133,17 +134,13 @@ async function initDatabase() {
     
     console.log('✅ Database tables initialized')
     
-    // Cargar configuración desde DB si existe
     const configDB = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
-    if (configDB && configDB.length > 0) {
-      configuracion = configDB[0].valor
+    if (configDB.success && configDB.rows.length > 0) {
+      configuracion = configDB.rows[0].valor
       console.log('✅ Configuration loaded from database')
     }
     
-    // Cargar usuarios desde DB
     await loadUsersFromDB()
-    
-    // Cargar roles desde DB
     await loadRolesFromDB()
     
   } catch (error) {
@@ -155,8 +152,8 @@ async function initDatabase() {
 async function loadUsersFromDB() {
   try {
     const dbUsers = await dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id')
-    if (dbUsers && dbUsers.length > 0) {
-      usuarios = dbUsers.map(u => ({
+    if (dbUsers.success && dbUsers.rows.length > 0) {
+      usuarios = dbUsers.rows.map(u => ({
         id: u.id,
         email: u.email,
         nombre: u.nombre,
@@ -166,7 +163,6 @@ async function loadUsersFromDB() {
       }))
       console.log(`✅ Loaded ${usuarios.length} users from database`)
     } else {
-      // Insertar usuarios por defecto si no existen
       console.log('📝 No users found, creating defaults...')
       for (const user of usuarios) {
         await dbQuery(
@@ -174,10 +170,9 @@ async function loadUsersFromDB() {
           [user.email, user.nombre, user.role, user.password]
         )
       }
-      // Recargar usuarios con IDs de la DB
       const reloaded = await dbQuery('SELECT * FROM usuarios_horas ORDER BY id')
-      if (reloaded && reloaded.length > 0) {
-        usuarios = reloaded.map(u => ({
+      if (reloaded.success && reloaded.rows.length > 0) {
+        usuarios = reloaded.rows.map(u => ({
           id: u.id,
           email: u.email,
           nombre: u.nombre,
@@ -197,15 +192,14 @@ async function loadUsersFromDB() {
 async function loadRolesFromDB() {
   try {
     const dbRoles = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
-    if (dbRoles && dbRoles.length > 0) {
-      roles = dbRoles.map(r => ({
+    if (dbRoles.success && dbRoles.rows.length > 0) {
+      roles = dbRoles.rows.map(r => ({
         id: r.id,
         nombre: r.nombre,
         permisos: r.permisos || []
       }))
       console.log(`✅ Loaded ${roles.length} roles from database`)
     } else {
-      // Insertar roles por defecto
       console.log('📝 No roles found, creating defaults...')
       for (const role of roles) {
         await dbQuery(
@@ -213,10 +207,9 @@ async function loadRolesFromDB() {
           [role.nombre, JSON.stringify(role.permisos)]
         )
       }
-      // Recargar roles con IDs de la DB
       const reloaded = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
-      if (reloaded && reloaded.length > 0) {
-        roles = reloaded.map(r => ({
+      if (reloaded.success && reloaded.rows.length > 0) {
+        roles = reloaded.rows.map(r => ({
           id: r.id,
           nombre: r.nombre,
           permisos: r.permisos || []
@@ -229,7 +222,6 @@ async function loadRolesFromDB() {
   }
 }
 
-// Inicializar DB al arrancar
 initDatabase()
 
 // ===== DATOS EN MEMORIA (FALLBACK + DEFAULTS) =====
@@ -268,11 +260,6 @@ let configuracion = {
   }
 }
 
-let horas = []
-let avisos = []
-let obras = []
-let mantenimientos = []
-
 // ===== MIDDLEWARES =====
 const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1]
@@ -297,8 +284,8 @@ const verifyAdmin = (req, res, next) => {
 app.get('/config/public', async (req, res) => {
   try {
     const dbConfig = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
-    if (dbConfig && dbConfig.length > 0) {
-      const config = dbConfig[0].valor
+    if (dbConfig.success && dbConfig.rows.length > 0) {
+      const config = dbConfig.rows[0].valor
       res.json({
         bienvenida: config.bienvenida || configuracion.bienvenida,
         empresa: {
@@ -346,15 +333,15 @@ app.get('/auth/me', verifyToken, (req, res) => {
 // ===== HORAS ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/horas', verifyToken, async (req, res) => {
   try {
-    let dbHoras = []
+    let result
     if (req.user.role === 'admin' || req.user.role === 'supervisor') {
-      dbHoras = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC')
+      result = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC')
     } else {
-      dbHoras = await dbQuery('SELECT * FROM horas_trabajo WHERE usuario_id = $1 ORDER BY fecha DESC', [req.user.id])
+      result = await dbQuery('SELECT * FROM horas_trabajo WHERE usuario_id = $1 ORDER BY fecha DESC', [req.user.id])
     }
     
-    if (dbHoras && dbHoras.length > 0) {
-      res.json(dbHoras)
+    if (result.success) {
+      res.json(result.rows)
     } else {
       res.json([])
     }
@@ -373,11 +360,11 @@ app.post('/horas', verifyToken, async (req, res) => {
   try {
     const result = await dbQuery(
       'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [req.user.id, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '']
+      [req.user.id, fecha, tipo_trabajo, parseFloat(cant_horas), numero_aviso, descripcion || '']
     )
     
-    if (result && result.length > 0) {
-      res.status(201).json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.status(201).json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al guardar en la base de datos' })
     }
@@ -392,13 +379,12 @@ app.put('/horas/:id', verifyToken, async (req, res) => {
   const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, estado } = req.body
   
   try {
-    // Verificar permisos
     const existing = await dbQuery('SELECT usuario_id FROM horas_trabajo WHERE id = $1', [horaId])
-    if (!existing || existing.length === 0) {
+    if (!existing.success || existing.rows.length === 0) {
       return res.status(404).json({ error: 'Registro no encontrado' })
     }
     
-    if (existing[0].usuario_id !== req.user.id && req.user.role === 'operario') {
+    if (existing.rows[0].usuario_id !== req.user.id && req.user.role === 'operario') {
       return res.status(403).json({ error: 'No autorizado' })
     }
     
@@ -407,8 +393,8 @@ app.put('/horas/:id', verifyToken, async (req, res) => {
       [fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion, estado || 'pendiente', horaId]
     )
     
-    if (result && result.length > 0) {
-      res.json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al actualizar' })
     }
@@ -422,13 +408,12 @@ app.delete('/horas/:id', verifyToken, async (req, res) => {
   const horaId = parseInt(req.params.id)
   
   try {
-    // Verificar permisos
     const existing = await dbQuery('SELECT usuario_id FROM horas_trabajo WHERE id = $1', [horaId])
-    if (!existing || existing.length === 0) {
+    if (!existing.success || existing.rows.length === 0) {
       return res.status(404).json({ error: 'Registro no encontrado' })
     }
     
-    if (existing[0].usuario_id !== req.user.id && req.user.role === 'operario') {
+    if (existing.rows[0].usuario_id !== req.user.id && req.user.role === 'operario') {
       return res.status(403).json({ error: 'No autorizado' })
     }
     
@@ -455,8 +440,8 @@ app.put('/horas/:id/validar', verifyToken, async (req, res) => {
       [nuevoEstado, horaId]
     )
     
-    if (result && result.length > 0) {
-      res.json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Registro no encontrado' })
     }
@@ -469,8 +454,8 @@ app.put('/horas/:id/validar', verifyToken, async (req, res) => {
 // ===== AVISOS ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/avisos', verifyToken, async (req, res) => {
   try {
-    const dbAvisos = await dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC')
-    res.json(dbAvisos || [])
+    const result = await dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC')
+    res.json(result.success ? result.rows : [])
   } catch (error) {
     res.json([])
   }
@@ -478,8 +463,8 @@ app.get('/avisos', verifyToken, async (req, res) => {
 
 app.get('/avisos/activos', verifyToken, async (req, res) => {
   try {
-    const dbAvisos = await dbQuery("SELECT * FROM avisos_trabajo WHERE estado = 'en_curso' ORDER BY id DESC")
-    res.json(dbAvisos || [])
+    const result = await dbQuery("SELECT * FROM avisos_trabajo WHERE estado = 'en_curso' ORDER BY id DESC")
+    res.json(result.success ? result.rows : [])
   } catch (error) {
     res.json([])
   }
@@ -497,8 +482,8 @@ app.post('/avisos', verifyToken, verifyAdmin, async (req, res) => {
       [numero, cliente, descripcion, estado || 'en_curso', fecha, JSON.stringify(alertas_email || [])]
     )
     
-    if (result && result.length > 0) {
-      res.status(201).json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.status(201).json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al crear aviso' })
     }
@@ -518,8 +503,8 @@ app.put('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
       [numero, cliente, descripcion, estado, fecha, JSON.stringify(alertas_email || []), avisoId]
     )
     
-    if (result && result.length > 0) {
-      res.json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Aviso no encontrado' })
     }
@@ -540,8 +525,8 @@ app.delete('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
 // ===== OBRAS ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/obras', verifyToken, async (req, res) => {
   try {
-    const dbObras = await dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC')
-    res.json(dbObras || [])
+    const result = await dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC')
+    res.json(result.success ? result.rows : [])
   } catch (error) {
     res.json([])
   }
@@ -549,8 +534,8 @@ app.get('/obras', verifyToken, async (req, res) => {
 
 app.get('/obras/activas', verifyToken, async (req, res) => {
   try {
-    const dbObras = await dbQuery("SELECT * FROM obras_trabajo WHERE estado = 'en_curso' ORDER BY id DESC")
-    res.json(dbObras || [])
+    const result = await dbQuery("SELECT * FROM obras_trabajo WHERE estado = 'en_curso' ORDER BY id DESC")
+    res.json(result.success ? result.rows : [])
   } catch (error) {
     res.json([])
   }
@@ -568,8 +553,8 @@ app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
       [numero, cliente, descripcion, estado || 'en_curso', fecha, fecha_fin_estimada || null, JSON.stringify(alertas_email || [])]
     )
     
-    if (result && result.length > 0) {
-      res.status(201).json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.status(201).json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al crear obra' })
     }
@@ -589,8 +574,8 @@ app.put('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
       [numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, JSON.stringify(alertas_email || []), obraId]
     )
     
-    if (result && result.length > 0) {
-      res.json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Obra no encontrada' })
     }
@@ -611,8 +596,8 @@ app.delete('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
 // ===== MANTENIMIENTOS ENDPOINTS (CON PERSISTENCIA) =====
 app.get('/mantenimientos', verifyToken, async (req, res) => {
   try {
-    const dbMant = await dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC')
-    res.json(dbMant || [])
+    const result = await dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC')
+    res.json(result.success ? result.rows : [])
   } catch (error) {
     res.json([])
   }
@@ -620,8 +605,8 @@ app.get('/mantenimientos', verifyToken, async (req, res) => {
 
 app.get('/mantenimientos/activos', verifyToken, async (req, res) => {
   try {
-    const dbMant = await dbQuery("SELECT * FROM mantenimientos_trabajo WHERE estado = 'activo' ORDER BY id DESC")
-    res.json(dbMant || [])
+    const result = await dbQuery("SELECT * FROM mantenimientos_trabajo WHERE estado = 'activo' ORDER BY id DESC")
+    res.json(result.success ? result.rows : [])
   } catch (error) {
     res.json([])
   }
@@ -644,8 +629,8 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
       [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado || 'activo', JSON.stringify(alertas_email || [])]
     )
     
-    if (result && result.length > 0) {
-      res.status(201).json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.status(201).json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al crear mantenimiento' })
     }
@@ -667,8 +652,8 @@ app.put('/mantenimientos/:id', verifyToken, verifyAdmin, async (req, res) => {
       [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, JSON.stringify(alertas_email || []), mantId]
     )
     
-    if (result && result.length > 0) {
-      res.json(result[0])
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Mantenimiento no encontrado' })
     }
@@ -693,9 +678,9 @@ app.get('/usuarios', verifyToken, async (req, res) => {
   }
   
   try {
-    const dbUsers = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas ORDER BY id')
-    if (dbUsers && dbUsers.length > 0) {
-      res.json(dbUsers)
+    const result = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas ORDER BY id')
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows)
     } else {
       res.json(usuarios.map(u => ({
         id: u.id,
@@ -734,16 +719,15 @@ app.post('/usuarios', verifyToken, async (req, res) => {
       [email, nombre, role, hashedPassword]
     )
     
-    if (result && result.length > 0) {
-      // Actualizar array en memoria
+    if (result.success && result.rows.length > 0) {
       usuarios.push({
-        id: result[0].id,
+        id: result.rows[0].id,
         email,
         nombre,
         role,
         password: hashedPassword
       })
-      res.status(201).json(result[0])
+      res.status(201).json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al crear usuario' })
     }
@@ -775,8 +759,7 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
     
     const result = await dbQuery(query, params)
     
-    if (result && result.length > 0) {
-      // Actualizar array en memoria
+    if (result.success && result.rows.length > 0) {
       const idx = usuarios.findIndex(u => u.id === userId)
       if (idx !== -1) {
         usuarios[idx].email = email
@@ -784,7 +767,7 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
         usuarios[idx].role = role
         if (password) usuarios[idx].password = bcrypt.hashSync(password, 10)
       }
-      res.json(result[0])
+      res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Usuario no encontrado' })
     }
@@ -802,12 +785,8 @@ app.delete('/usuarios/:id', verifyToken, async (req, res) => {
   const userId = parseInt(req.params.id)
   
   try {
-    // Soft delete: marcar como inactivo
     await dbQuery('UPDATE usuarios_horas SET activo = false WHERE id = $1', [userId])
-    
-    // Actualizar array en memoria
     usuarios = usuarios.filter(u => u.id !== userId)
-    
     res.json({ message: 'Usuario eliminado' })
   } catch (error) {
     console.error('Error deleting user:', error)
@@ -822,9 +801,9 @@ app.get('/roles', verifyToken, async (req, res) => {
   }
   
   try {
-    const dbRoles = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
-    if (dbRoles && dbRoles.length > 0) {
-      res.json(dbRoles)
+    const result = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows)
     } else {
       res.json(roles)
     }
@@ -851,13 +830,12 @@ app.put('/roles/:id', verifyToken, async (req, res) => {
       [JSON.stringify(permisos), roleId]
     )
     
-    if (result && result.length > 0) {
-      // Actualizar array en memoria
+    if (result.success && result.rows.length > 0) {
       const idx = roles.findIndex(r => r.id === roleId)
       if (idx !== -1) {
         roles[idx].permisos = permisos
       }
-      res.json(result[0])
+      res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Rol no encontrado' })
     }
@@ -867,7 +845,6 @@ app.put('/roles/:id', verifyToken, async (req, res) => {
   }
 })
 
-// Crear nuevo rol
 app.post('/roles', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'No autorizado' })
@@ -881,22 +858,21 @@ app.post('/roles', verifyToken, async (req, res) => {
   
   const nombreNormalizado = nombre.toLowerCase().trim()
   
-  // Verificar si ya existe
-  const existing = await dbQuery('SELECT id FROM roles_horas WHERE nombre = $1', [nombreNormalizado])
-  if (existing && existing.length > 0) {
-    return res.status(400).json({ error: 'Ya existe un rol con ese nombre' })
-  }
-  
   try {
+    const existing = await dbQuery('SELECT id FROM roles_horas WHERE nombre = $1', [nombreNormalizado])
+    if (existing.success && existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Ya existe un rol con ese nombre' })
+    }
+    
     const result = await dbQuery(
       'INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) RETURNING *',
       [nombreNormalizado, JSON.stringify(permisos || [])]
     )
     
-    if (result && result.length > 0) {
+    if (result.success && result.rows.length > 0) {
       const newRole = {
-        id: result[0].id,
-        nombre: result[0].nombre,
+        id: result.rows[0].id,
+        nombre: result.rows[0].nombre,
         permisos: permisos || []
       }
       roles.push(newRole)
@@ -910,7 +886,6 @@ app.post('/roles', verifyToken, async (req, res) => {
   }
 })
 
-// Eliminar rol (solo roles personalizados, no admin/supervisor/operario)
 app.delete('/roles/:id', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'No autorizado' })
@@ -918,16 +893,15 @@ app.delete('/roles/:id', verifyToken, async (req, res) => {
   
   const roleId = parseInt(req.params.id)
   
-  // Verificar que no sea un rol del sistema
-  const roleToDelete = await dbQuery('SELECT nombre FROM roles_horas WHERE id = $1', [roleId])
-  if (roleToDelete && roleToDelete.length > 0) {
-    const roleName = roleToDelete[0].nombre
-    if (['admin', 'supervisor', 'operario'].includes(roleName)) {
-      return res.status(400).json({ error: 'No se pueden eliminar los roles del sistema' })
-    }
-  }
-  
   try {
+    const roleToDelete = await dbQuery('SELECT nombre FROM roles_horas WHERE id = $1', [roleId])
+    if (roleToDelete.success && roleToDelete.rows.length > 0) {
+      const roleName = roleToDelete.rows[0].nombre
+      if (['admin', 'supervisor', 'operario'].includes(roleName)) {
+        return res.status(400).json({ error: 'No se pueden eliminar los roles del sistema' })
+      }
+    }
+    
     await dbQuery('DELETE FROM roles_horas WHERE id = $1', [roleId])
     roles = roles.filter(r => r.id !== roleId)
     res.json({ message: 'Rol eliminado correctamente' })
@@ -944,10 +918,10 @@ app.get('/configuracion', verifyToken, async (req, res) => {
   }
   
   try {
-    const dbConfig = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
+    const result = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
     
-    if (dbConfig && dbConfig.length > 0) {
-      res.json(dbConfig[0].valor)
+    if (result.success && result.rows.length > 0) {
+      res.json(result.rows[0].valor)
     } else {
       res.json(configuracion)
     }
@@ -1062,27 +1036,23 @@ app.post('/smtp/test', verifyToken, async (req, res) => {
   }
   
   try {
-    // Importar nodemailer dinámicamente
     const nodemailer = require('nodemailer')
     
-    // Crear transporter
     const transporter = nodemailer.createTransport({
       host: host,
       port: parseInt(puerto) || 587,
-      secure: parseInt(puerto) === 465, // true para 465, false para otros puertos
+      secure: parseInt(puerto) === 465,
       auth: {
         user: usuario,
         pass: contraseña
       },
       tls: {
-        rejectUnauthorized: false // Para evitar errores con certificados auto-firmados
+        rejectUnauthorized: false
       }
     })
     
-    // Verificar conexión
     await transporter.verify()
     
-    // Enviar email de prueba
     const info = await transporter.sendMail({
       from: `"GrupLomi Sistema" <${usuario}>`,
       to: email_destino,
@@ -1114,7 +1084,6 @@ app.post('/smtp/test', verifyToken, async (req, res) => {
   } catch (error) {
     console.error('❌ SMTP test error:', error)
     
-    // Mensajes de error más amigables
     let errorMsg = error.message
     if (error.code === 'EAUTH') {
       errorMsg = 'Error de autenticación: Usuario o contraseña incorrectos. Si usas Gmail, necesitas una "Contraseña de aplicación".'
@@ -1132,14 +1101,14 @@ app.post('/smtp/test', verifyToken, async (req, res) => {
 
 // ===== HEALTH ENDPOINT =====
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', db: 'connected via proxy', version: '3.1' })
+  res.json({ status: 'ok', db: 'connected via proxy', version: '3.2' })
 })
 
 // ===== TEST DB ENDPOINT =====
 app.get('/test-db', async (req, res) => {
   try {
     const result = await dbQuery('SELECT 1 as test')
-    res.json({ status: 'ok', db: 'connected', result })
+    res.json({ status: 'ok', db: 'connected', result: result.rows })
   } catch (error) {
     res.json({ status: 'error', message: error.message })
   }
@@ -1174,7 +1143,7 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
 
 const PORT = process.env.PORT || 8000
 app.listen(PORT, () => {
-  console.log('🚀 Backend v3.0 running on port ' + PORT)
+  console.log('🚀 Backend v3.2 running on port ' + PORT)
   console.log('✅ Full PostgreSQL persistence enabled')
 })
 
