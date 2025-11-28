@@ -1049,6 +1049,87 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
   res.json(configuracion.smtp)
 })
 
+// ===== SMTP TEST ENDPOINT =====
+app.post('/smtp/test', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  const { host, puerto, usuario, contraseña, email_destino } = req.body
+  
+  if (!host || !usuario || !contraseña || !email_destino) {
+    return res.status(400).json({ error: 'Faltan datos: host, usuario, contraseña, email_destino' })
+  }
+  
+  try {
+    // Importar nodemailer dinámicamente
+    const nodemailer = require('nodemailer')
+    
+    // Crear transporter
+    const transporter = nodemailer.createTransport({
+      host: host,
+      port: parseInt(puerto) || 587,
+      secure: parseInt(puerto) === 465, // true para 465, false para otros puertos
+      auth: {
+        user: usuario,
+        pass: contraseña
+      },
+      tls: {
+        rejectUnauthorized: false // Para evitar errores con certificados auto-firmados
+      }
+    })
+    
+    // Verificar conexión
+    await transporter.verify()
+    
+    // Enviar email de prueba
+    const info = await transporter.sendMail({
+      from: `"GrupLomi Sistema" <${usuario}>`,
+      to: email_destino,
+      subject: '✅ Prueba SMTP - GrupLomi Horas',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="background: linear-gradient(135deg, #0071e3 0%, #0051a2 100%); padding: 30px; border-radius: 12px; text-align: center; margin-bottom: 20px;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">✅ Configuración SMTP Correcta</h1>
+          </div>
+          <div style="background: #f5f5f7; padding: 25px; border-radius: 12px;">
+            <p style="color: #1d1d1f; font-size: 16px; margin: 0 0 15px 0;">Este es un email de prueba del sistema <strong>GrupLomi Horas</strong>.</p>
+            <p style="color: #86868b; font-size: 14px; margin: 0 0 15px 0;">Si has recibido este mensaje, la configuración SMTP está funcionando correctamente.</p>
+            <hr style="border: none; border-top: 1px solid #d2d2d7; margin: 20px 0;">
+            <p style="color: #86868b; font-size: 12px; margin: 0;"><strong>Detalles de la prueba:</strong></p>
+            <ul style="color: #86868b; font-size: 12px; margin: 10px 0 0 0; padding-left: 20px;">
+              <li>Servidor SMTP: ${host}</li>
+              <li>Puerto: ${puerto || 587}</li>
+              <li>Fecha: ${new Date().toLocaleString('es-ES')}</li>
+            </ul>
+          </div>
+          <p style="color: #86868b; font-size: 11px; text-align: center; margin-top: 20px;">Este mensaje fue enviado automáticamente por GrupLomi Horas</p>
+        </div>
+      `
+    })
+    
+    console.log('✅ Test email sent:', info.messageId)
+    res.json({ success: true, message: 'Email enviado correctamente', messageId: info.messageId })
+    
+  } catch (error) {
+    console.error('❌ SMTP test error:', error)
+    
+    // Mensajes de error más amigables
+    let errorMsg = error.message
+    if (error.code === 'EAUTH') {
+      errorMsg = 'Error de autenticación: Usuario o contraseña incorrectos. Si usas Gmail, necesitas una "Contraseña de aplicación".'
+    } else if (error.code === 'ESOCKET' || error.code === 'ECONNECTION') {
+      errorMsg = 'No se pudo conectar al servidor SMTP. Verifica el host y el puerto.'
+    } else if (error.code === 'ETIMEDOUT') {
+      errorMsg = 'Tiempo de conexión agotado. El servidor SMTP no responde.'
+    } else if (error.code === 'ECONNREFUSED') {
+      errorMsg = 'Conexión rechazada. El puerto podría estar bloqueado o el servidor no está disponible.'
+    }
+    
+    res.status(500).json({ error: errorMsg })
+  }
+})
+
 // ===== HEALTH ENDPOINT =====
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', db: 'connected via proxy', version: '3.1' })
