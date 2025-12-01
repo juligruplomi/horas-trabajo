@@ -1,6 +1,6 @@
 {
   "name": "horas-trabajo-backend",
-  "version": "1.0.0",
+  "version": "3.3.0",
   "description": "Backend para Sistema de Control de Horas",
   "main": "api/index.js",
   "scripts": {
@@ -8,6 +8,7 @@
     "start": "node api/index.js"
   },
   "dependencies": {
+    "abort-controller": "^3.0.0",
     "axios": "^1.6.2",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
