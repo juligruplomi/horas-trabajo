@@ -15,38 +15,30 @@ const PROXY_URL = process.env.PROXY_URL || 'http://185.194.59.40:3001'
 const PROXY_API_KEY = process.env.PROXY_API_KEY || 'GrupLomi2024ProxySecureKey_XyZ789'
 const JWT_SECRET = process.env.JWT_SECRET_KEY || 'HorasTrabajo_JWT_Secret_2025'
 
-// ===== SISTEMA DE LOGS =====
-const logsEnMemoria = [] // Fallback si la DB falla
-const MAX_LOGS_MEMORIA = 500
+// ===== SISTEMA DE LOGS EN MEMORIA (RÁPIDO) =====
+const logsEnMemoria = []
+const MAX_LOGS_MEMORIA = 200
 
-async function registrarLog(tipo, accion, detalles = {}, usuario = null) {
+// Función NO bloqueante para registrar logs
+function registrarLog(tipo, accion, detalles = {}, usuario = null) {
   const log = {
-    tipo, // 'info', 'warning', 'error', 'success', 'debug'
+    id: Date.now(),
+    tipo,
     accion,
     detalles: typeof detalles === 'string' ? detalles : JSON.stringify(detalles),
     usuario: usuario || 'sistema',
     fecha: new Date().toISOString()
   }
   
-  // Guardar en memoria siempre (para respuesta rápida)
+  // Solo guardar en memoria (muy rápido)
   logsEnMemoria.unshift(log)
   if (logsEnMemoria.length > MAX_LOGS_MEMORIA) {
     logsEnMemoria.pop()
   }
   
-  // Intentar guardar en DB (no bloquear si falla)
-  try {
-    await dbQuery(
-      'INSERT INTO logs_sistema (tipo, accion, detalles, usuario, fecha) VALUES ($1, $2, $3, $4, $5)',
-      [log.tipo, log.accion, log.detalles, log.usuario, log.fecha]
-    )
-  } catch (error) {
-    console.error('Error guardando log en DB:', error.message)
-  }
-  
-  // También mostrar en consola
+  // Console log
   const emoji = { info: 'ℹ️', warning: '⚠️', error: '❌', success: '✅', debug: '🔍' }
-  console.log(`${emoji[tipo] || '📝'} [${tipo.toUpperCase()}] ${accion}`, detalles)
+  console.log(`${emoji[tipo] || '📝'} [${tipo.toUpperCase()}] ${accion}`)
   
   return log
 }
@@ -54,8 +46,7 @@ async function registrarLog(tipo, accion, detalles = {}, usuario = null) {
 // ===== FUNCIÓN PARA QUERIES A POSTGRESQL VIA PROXY =====
 async function dbQuery(text, params = []) {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 20000)
-  const startTime = Date.now()
+  const timeout = setTimeout(() => controller.abort(), 15000) // Reducido a 15s
   
   try {
     const response = await fetch(`${PROXY_URL}/query`, {
@@ -69,7 +60,6 @@ async function dbQuery(text, params = []) {
     })
     
     clearTimeout(timeout)
-    const duration = Date.now() - startTime
     
     if (!response.ok) {
       const errorText = await response.text()
@@ -84,15 +74,7 @@ async function dbQuery(text, params = []) {
       throw new Error(data.error)
     }
     
-    // Log de queries lentas (>5 segundos)
-    if (duration > 5000) {
-      registrarLog('warning', 'Query lenta detectada', { 
-        query: text.substring(0, 100), 
-        duracion: `${duration}ms` 
-      })
-    }
-    
-    return { rows: data.rows || [], success: true, duration }
+    return { rows: data.rows || [], success: true }
   } catch (error) {
     clearTimeout(timeout)
     console.error('DB query error:', error.message)
@@ -100,7 +82,7 @@ async function dbQuery(text, params = []) {
   }
 }
 
-// ===== DATOS EN MEMORIA (FALLBACK + DEFAULTS) =====
+// ===== DATOS EN MEMORIA =====
 let usuarios = [
   { id: 1, email: 'admin@gruplomi.com', nombre: 'Admin', role: 'admin', password: bcrypt.hashSync('Admin2025!', 10) },
   { id: 2, email: 'supervisor@gruplomi.com', nombre: 'Supervisor', role: 'supervisor', password: bcrypt.hashSync('Sup2025!', 10) },
@@ -116,40 +98,22 @@ const DEFAULT_ROLES = [
 let roles = [...DEFAULT_ROLES]
 
 const DEFAULT_CONFIG = {
-  empresa: {
-    nombre: 'GrupLomi',
-    logo: null,
-    color_primario: '#0071e3',
-    color_secundario: '#0066cc'
-  },
-  bienvenida: {
-    titulo: 'GrupLomi Horas',
-    subtitulo: 'Sistema de Control de Horas'
-  },
-  idioma: {
-    idioma_principal: 'es',
-    traducciones: {}
-  },
-  smtp: {
-    host: '',
-    puerto: 587,
-    usuario: '',
-    contraseña: ''
-  }
+  empresa: { nombre: 'GrupLomi', logo: null, color_primario: '#0071e3', color_secundario: '#0066cc' },
+  bienvenida: { titulo: 'GrupLomi Horas', subtitulo: 'Sistema de Control de Horas' },
+  idioma: { idioma_principal: 'es', traducciones: {} },
+  smtp: { host: '', puerto: 587, usuario: '', contraseña: '' }
 }
 
 let configuracion = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
 let dbInitialized = false
 
-// ===== INICIALIZAR TABLAS EN LA BASE DE DATOS =====
+// ===== INICIALIZAR BASE DE DATOS =====
 async function initDatabase() {
   if (dbInitialized) return
   
   try {
-    const startTime = Date.now()
     console.log('🔄 Initializing database...')
     
-    // Crear todas las tablas en paralelo
     await Promise.all([
       dbQuery(`CREATE TABLE IF NOT EXISTS configuracion_horas (clave VARCHAR(100) PRIMARY KEY, valor JSONB NOT NULL)`),
       dbQuery(`CREATE TABLE IF NOT EXISTS usuarios_horas (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, nombre VARCHAR(255) NOT NULL, role VARCHAR(50) NOT NULL, password VARCHAR(255) NOT NULL, activo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`),
@@ -157,96 +121,71 @@ async function initDatabase() {
       dbQuery(`CREATE TABLE IF NOT EXISTS avisos_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`),
       dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`),
       dbQuery(`CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (id SERIAL PRIMARY KEY, descripcion TEXT NOT NULL, cliente VARCHAR(255) NOT NULL, tipo_alerta VARCHAR(20), primera_alerta DATE, proxima_alerta DATE, estado VARCHAR(20) DEFAULT 'activo', alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`),
-      dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`),
-      dbQuery(`CREATE TABLE IF NOT EXISTS logs_sistema (id SERIAL PRIMARY KEY, tipo VARCHAR(20) NOT NULL, accion VARCHAR(255) NOT NULL, detalles TEXT, usuario VARCHAR(100), fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+      dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`)
     ])
     
-    const duration = Date.now() - startTime
-    await registrarLog('success', 'Base de datos inicializada', { duracion: `${duration}ms` })
+    console.log('✅ Tables created')
     
-    // Cargar configuración desde DB
     const configDB = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
     if (configDB.success && configDB.rows.length > 0) {
       configuracion = { ...DEFAULT_CONFIG, ...configDB.rows[0].valor }
-      await registrarLog('info', 'Configuración cargada desde DB')
     }
     
-    // Cargar/crear usuarios
     await loadUsersFromDB()
-    
-    // Cargar/crear roles
     await ensureDefaultRoles()
     await loadRolesFromDB()
     
     dbInitialized = true
-    await registrarLog('success', 'Sistema iniciado correctamente', { version: '3.4' })
+    registrarLog('success', 'Sistema iniciado', { version: '3.5' })
     
   } catch (error) {
     console.error('Database init error:', error)
-    await registrarLog('error', 'Error inicializando base de datos', { error: error.message })
+    registrarLog('error', 'Error inicializando DB', { error: error.message })
   }
 }
 
-// ===== ASEGURAR QUE EXISTAN LOS ROLES POR DEFECTO =====
 async function ensureDefaultRoles() {
   for (const role of DEFAULT_ROLES) {
     await dbQuery(
       `INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) 
        ON CONFLICT (nombre) DO UPDATE SET permisos = COALESCE(
          CASE WHEN roles_horas.permisos = '[]'::jsonb OR roles_horas.permisos IS NULL 
-              THEN $2::jsonb 
-              ELSE roles_horas.permisos 
-         END, $2::jsonb)`,
+              THEN $2::jsonb ELSE roles_horas.permisos END, $2::jsonb)`,
       [role.nombre, JSON.stringify(role.permisos)]
     )
   }
 }
 
-// ===== CARGAR USUARIOS DESDE DB =====
 async function loadUsersFromDB() {
   try {
     const dbUsers = await dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id')
     if (dbUsers.success && dbUsers.rows.length > 0) {
-      usuarios = dbUsers.rows.map(u => ({
-        id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo
-      }))
-      await registrarLog('info', 'Usuarios cargados', { cantidad: usuarios.length })
+      usuarios = dbUsers.rows.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo }))
     } else {
       for (const user of usuarios) {
-        await dbQuery(
-          'INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING',
-          [user.email, user.nombre, user.role, user.password]
-        )
+        await dbQuery('INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING', [user.email, user.nombre, user.role, user.password])
       }
       const reloaded = await dbQuery('SELECT * FROM usuarios_horas ORDER BY id')
       if (reloaded.success && reloaded.rows.length > 0) {
-        usuarios = reloaded.rows.map(u => ({
-          id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo !== false
-        }))
+        usuarios = reloaded.rows.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo !== false }))
       }
-      await registrarLog('info', 'Usuarios por defecto creados')
     }
   } catch (error) {
-    await registrarLog('error', 'Error cargando usuarios', { error: error.message })
+    console.error('Error loading users:', error)
   }
 }
 
-// ===== CARGAR ROLES DESDE DB =====
 async function loadRolesFromDB() {
   try {
     const dbRoles = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
     if (dbRoles.success && dbRoles.rows.length > 0) {
-      roles = dbRoles.rows.map(r => ({
-        id: r.id, nombre: r.nombre, permisos: Array.isArray(r.permisos) ? r.permisos : (r.permisos || [])
-      }))
-      await registrarLog('info', 'Roles cargados', { cantidad: roles.length })
+      roles = dbRoles.rows.map(r => ({ id: r.id, nombre: r.nombre, permisos: Array.isArray(r.permisos) ? r.permisos : (r.permisos || []) }))
     }
   } catch (error) {
-    await registrarLog('error', 'Error cargando roles', { error: error.message })
+    console.error('Error loading roles:', error)
   }
 }
 
-// ===== CARGAR CONFIGURACIÓN ACTUAL =====
 async function loadCurrentConfig() {
   try {
     const result = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
@@ -255,26 +194,21 @@ async function loadCurrentConfig() {
       return configuracion
     }
   } catch (error) {
-    await registrarLog('error', 'Error cargando configuración', { error: error.message })
+    console.error('Error loading config:', error)
   }
   return configuracion
 }
 
-// ===== GUARDAR CONFIGURACIÓN =====
 async function saveConfig() {
   try {
-    await dbQuery(
-      "INSERT INTO configuracion_horas (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2",
-      ['general', JSON.stringify(configuracion)]
-    )
+    await dbQuery("INSERT INTO configuracion_horas (clave, valor) VALUES ($1, $2) ON CONFLICT (clave) DO UPDATE SET valor = $2", ['general', JSON.stringify(configuracion)])
     return true
   } catch (error) {
-    await registrarLog('error', 'Error guardando configuración', { error: error.message })
+    console.error('Error saving config:', error)
     return false
   }
 }
 
-// Inicializar DB al arrancar
 initDatabase()
 
 // ===== MIDDLEWARES =====
@@ -282,8 +216,7 @@ const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1]
   if (!token) return res.status(401).json({ error: 'Token required' })
   try {
-    const decoded = jwt.verify(token, JWT_SECRET)
-    req.user = decoded
+    req.user = jwt.verify(token, JWT_SECRET)
     next()
   } catch (err) {
     res.status(401).json({ error: 'Invalid token' })
@@ -297,90 +230,55 @@ const verifyAdmin = (req, res, next) => {
   next()
 }
 
-// ===== LOGS ENDPOINTS =====
-app.get('/logs', verifyToken, async (req, res) => {
+// ===== LOGS ENDPOINTS (SOLO MEMORIA - MUY RÁPIDO) =====
+app.get('/logs', verifyToken, (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'No autorizado' })
   }
   
-  const limit = parseInt(req.query.limit) || 100
-  const tipo = req.query.tipo || null
+  const tipo = req.query.tipo
+  const limit = Math.min(parseInt(req.query.limit) || 100, MAX_LOGS_MEMORIA)
   
-  try {
-    let query = 'SELECT * FROM logs_sistema'
-    let params = []
-    
-    if (tipo) {
-      query += ' WHERE tipo = $1'
-      params.push(tipo)
-    }
-    
-    query += ' ORDER BY fecha DESC LIMIT $' + (params.length + 1)
-    params.push(limit)
-    
-    const result = await dbQuery(query, params)
-    
-    if (result.success) {
-      res.json(result.rows)
-    } else {
-      // Fallback a logs en memoria
-      let logs = logsEnMemoria
-      if (tipo) {
-        logs = logs.filter(l => l.tipo === tipo)
-      }
-      res.json(logs.slice(0, limit))
-    }
-  } catch (error) {
-    res.json(logsEnMemoria.slice(0, limit))
+  let logs = logsEnMemoria
+  if (tipo && tipo !== 'all') {
+    logs = logs.filter(l => l.tipo === tipo)
   }
+  
+  res.json(logs.slice(0, limit))
 })
 
-app.delete('/logs', verifyToken, async (req, res) => {
+app.get('/logs/stats', verifyToken, (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'No autorizado' })
   }
   
-  try {
-    // Mantener últimos 7 días
-    await dbQuery("DELETE FROM logs_sistema WHERE fecha < NOW() - INTERVAL '7 days'")
-    logsEnMemoria.length = 0
-    await registrarLog('info', 'Logs limpiados', {}, req.user.email)
-    res.json({ message: 'Logs limpiados correctamente' })
-  } catch (error) {
-    res.status(500).json({ error: 'Error limpiando logs' })
+  const ahora = Date.now()
+  const hace24h = ahora - (24 * 60 * 60 * 1000)
+  
+  const logsRecientes = logsEnMemoria.filter(l => new Date(l.fecha).getTime() > hace24h)
+  
+  const stats = {
+    success: logsRecientes.filter(l => l.tipo === 'success').length,
+    error: logsRecientes.filter(l => l.tipo === 'error').length,
+    warning: logsRecientes.filter(l => l.tipo === 'warning').length,
+    info: logsRecientes.filter(l => l.tipo === 'info').length
   }
+  
+  res.json({
+    por_tipo: Object.entries(stats).map(([tipo, cantidad]) => ({ tipo, cantidad })),
+    total: logsEnMemoria.length,
+    en_memoria: logsEnMemoria.length
+  })
 })
 
-app.get('/logs/stats', verifyToken, async (req, res) => {
+app.delete('/logs', verifyToken, (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'No autorizado' })
   }
   
-  try {
-    const stats = await dbQuery(`
-      SELECT 
-        tipo,
-        COUNT(*) as cantidad,
-        MAX(fecha) as ultimo
-      FROM logs_sistema 
-      WHERE fecha > NOW() - INTERVAL '24 hours'
-      GROUP BY tipo
-    `)
-    
-    const total = await dbQuery('SELECT COUNT(*) as total FROM logs_sistema')
-    
-    res.json({
-      por_tipo: stats.success ? stats.rows : [],
-      total: total.success && total.rows[0] ? parseInt(total.rows[0].total) : logsEnMemoria.length,
-      en_memoria: logsEnMemoria.length
-    })
-  } catch (error) {
-    res.json({
-      por_tipo: [],
-      total: logsEnMemoria.length,
-      en_memoria: logsEnMemoria.length
-    })
-  }
+  logsEnMemoria.length = 0
+  registrarLog('info', 'Logs limpiados', {}, req.user.email)
+  res.json({ message: 'Logs limpiados correctamente' })
 })
 
 // ===== ENDPOINT PÚBLICO =====
@@ -389,10 +287,7 @@ app.get('/config/public', async (req, res) => {
     await loadCurrentConfig()
     res.json({
       bienvenida: configuracion.bienvenida || DEFAULT_CONFIG.bienvenida,
-      empresa: {
-        nombre: configuracion.empresa?.nombre || DEFAULT_CONFIG.empresa.nombre,
-        logo: configuracion.empresa?.logo || null
-      }
+      empresa: { nombre: configuracion.empresa?.nombre || DEFAULT_CONFIG.empresa.nombre, logo: configuracion.empresa?.logo || null }
     })
   } catch (error) {
     res.json({ bienvenida: DEFAULT_CONFIG.bienvenida, empresa: DEFAULT_CONFIG.empresa })
@@ -407,12 +302,12 @@ app.post('/auth/login', async (req, res) => {
   const usuario = usuarios.find(u => u.email === email)
   
   if (!usuario || !bcrypt.compareSync(password, usuario.password)) {
-    await registrarLog('warning', 'Intento de login fallido', { email })
+    registrarLog('warning', 'Login fallido', { email })
     return res.status(401).json({ error: 'Credenciales inválidas' })
   }
   
   const token = jwt.sign({ id: usuario.id, email: usuario.email, role: usuario.role, nombre: usuario.nombre }, JWT_SECRET, { expiresIn: '24h' })
-  await registrarLog('success', 'Login exitoso', { email: usuario.email, role: usuario.role }, usuario.email)
+  registrarLog('success', 'Login exitoso', { email: usuario.email }, usuario.email)
   res.json({ token, user: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role } })
 })
 
@@ -433,7 +328,6 @@ app.get('/horas', verifyToken, async (req, res) => {
     }
     res.json(result.success ? result.rows : [])
   } catch (error) {
-    await registrarLog('error', 'Error obteniendo horas', { error: error.message }, req.user.email)
     res.json([])
   }
 })
@@ -452,15 +346,13 @@ app.post('/horas', verifyToken, async (req, res) => {
     )
     
     if (result.success && result.rows.length > 0) {
-      await registrarLog('success', 'Horas registradas', { fecha, horas: cant_horas, tipo: tipo_trabajo }, req.user.email)
+      registrarLog('success', 'Horas registradas', { fecha, horas: cant_horas }, req.user.email)
       res.status(201).json(result.rows[0])
     } else {
-      await registrarLog('error', 'Error guardando horas', { error: result.error }, req.user.email)
-      res.status(500).json({ error: result.error || 'Error al guardar en la base de datos' })
+      res.status(500).json({ error: result.error || 'Error al guardar' })
     }
   } catch (error) {
-    await registrarLog('error', 'Excepción creando horas', { error: error.message }, req.user.email)
-    res.status(500).json({ error: 'Error al crear el registro: ' + error.message })
+    res.status(500).json({ error: 'Error al crear el registro' })
   }
 })
 
@@ -484,7 +376,6 @@ app.put('/horas/:id', verifyToken, async (req, res) => {
     )
     
     if (result.success && result.rows.length > 0) {
-      await registrarLog('info', 'Horas actualizadas', { id: horaId }, req.user.email)
       res.json(result.rows[0])
     } else {
       res.status(500).json({ error: 'Error al actualizar' })
@@ -508,7 +399,7 @@ app.delete('/horas/:id', verifyToken, async (req, res) => {
     }
     
     await dbQuery('DELETE FROM horas_trabajo WHERE id=$1', [horaId])
-    await registrarLog('warning', 'Horas eliminadas', { id: horaId }, req.user.email)
+    registrarLog('warning', 'Horas eliminadas', { id: horaId }, req.user.email)
     res.json({ message: 'Eliminado correctamente' })
   } catch (error) {
     res.status(500).json({ error: 'Error al eliminar' })
@@ -525,13 +416,10 @@ app.put('/horas/:id/validar', verifyToken, async (req, res) => {
   const nuevoEstado = estado === 'validado' ? 'validado' : 'rechazado'
   
   try {
-    const result = await dbQuery(
-      'UPDATE horas_trabajo SET estado = $1 WHERE id = $2 RETURNING *',
-      [nuevoEstado, horaId]
-    )
+    const result = await dbQuery('UPDATE horas_trabajo SET estado = $1 WHERE id = $2 RETURNING *', [nuevoEstado, horaId])
     
     if (result.success && result.rows.length > 0) {
-      await registrarLog('info', `Horas ${nuevoEstado}`, { id: horaId }, req.user.email)
+      registrarLog('info', `Horas ${nuevoEstado}`, { id: horaId }, req.user.email)
       res.json(result.rows[0])
     } else {
       res.status(404).json({ error: 'Registro no encontrado' })
@@ -564,7 +452,7 @@ app.post('/avisos', verifyToken, verifyAdmin, async (req, res) => {
   )
   
   if (result.success && result.rows.length > 0) {
-    await registrarLog('success', 'Aviso creado', { numero, cliente }, req.user.email)
+    registrarLog('success', 'Aviso creado', { numero }, req.user.email)
     res.status(201).json(result.rows[0])
   } else {
     res.status(500).json({ error: 'Error al crear aviso' })
@@ -589,7 +477,7 @@ app.put('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
 
 app.delete('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
   await dbQuery('DELETE FROM avisos_trabajo WHERE id = $1', [parseInt(req.params.id)])
-  await registrarLog('warning', 'Aviso eliminado', { id: req.params.id }, req.user.email)
+  registrarLog('warning', 'Aviso eliminado', { id: req.params.id }, req.user.email)
   res.json({ message: 'Eliminado' })
 })
 
@@ -616,7 +504,7 @@ app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
   )
   
   if (result.success && result.rows.length > 0) {
-    await registrarLog('success', 'Obra creada', { numero, cliente }, req.user.email)
+    registrarLog('success', 'Obra creada', { numero }, req.user.email)
     res.status(201).json(result.rows[0])
   } else {
     res.status(500).json({ error: 'Error al crear obra' })
@@ -641,7 +529,7 @@ app.put('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
 
 app.delete('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
   await dbQuery('DELETE FROM obras_trabajo WHERE id = $1', [parseInt(req.params.id)])
-  await registrarLog('warning', 'Obra eliminada', { id: req.params.id }, req.user.email)
+  registrarLog('warning', 'Obra eliminada', { id: req.params.id }, req.user.email)
   res.json({ message: 'Eliminado' })
 })
 
@@ -673,7 +561,7 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
   )
   
   if (result.success && result.rows.length > 0) {
-    await registrarLog('success', 'Mantenimiento creado', { cliente, tipo: tipo_alerta }, req.user.email)
+    registrarLog('success', 'Mantenimiento creado', { cliente }, req.user.email)
     res.status(201).json(result.rows[0])
   } else {
     res.status(500).json({ error: 'Error al crear mantenimiento' })
@@ -700,15 +588,13 @@ app.put('/mantenimientos/:id', verifyToken, verifyAdmin, async (req, res) => {
 
 app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, async (req, res) => {
   await dbQuery('DELETE FROM mantenimientos_trabajo WHERE id = $1', [parseInt(req.params.id)])
-  await registrarLog('warning', 'Mantenimiento eliminado', { id: req.params.id }, req.user.email)
+  registrarLog('warning', 'Mantenimiento eliminado', { id: req.params.id }, req.user.email)
   res.json({ message: 'Eliminado' })
 })
 
 // ===== USUARIOS ENDPOINTS =====
 app.get('/usuarios', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const result = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas ORDER BY id')
   if (result.success && result.rows.length > 0) {
@@ -719,14 +605,10 @@ app.get('/usuarios', verifyToken, async (req, res) => {
 })
 
 app.post('/usuarios', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const { email, nombre, role, password } = req.body
-  if (!email || !nombre || !role) {
-    return res.status(400).json({ error: 'Campos requeridos: email, nombre, role' })
-  }
+  if (!email || !nombre || !role) return res.status(400).json({ error: 'Campos requeridos: email, nombre, role' })
   
   const hashedPassword = bcrypt.hashSync(password || 'TempPassword2025!', 10)
   
@@ -737,18 +619,15 @@ app.post('/usuarios', verifyToken, async (req, res) => {
   
   if (result.success && result.rows.length > 0) {
     usuarios.push({ id: result.rows[0].id, email, nombre, role, password: hashedPassword })
-    await registrarLog('success', 'Usuario creado', { email, role }, req.user.email)
+    registrarLog('success', 'Usuario creado', { email }, req.user.email)
     res.status(201).json(result.rows[0])
   } else {
-    await registrarLog('error', 'Error creando usuario', { email, error: result.error }, req.user.email)
-    res.status(500).json({ error: result.error || 'Error al crear usuario (email duplicado?)' })
+    res.status(500).json({ error: result.error || 'Error al crear usuario' })
   }
 })
 
 app.put('/usuarios/:id', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const userId = parseInt(req.params.id)
   const { email, nombre, role, password } = req.body
@@ -771,7 +650,7 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
       usuarios[idx] = { ...usuarios[idx], email, nombre, role }
       if (password) usuarios[idx].password = bcrypt.hashSync(password, 10)
     }
-    await registrarLog('info', 'Usuario actualizado', { id: userId, email }, req.user.email)
+    registrarLog('info', 'Usuario actualizado', { id: userId }, req.user.email)
     res.json(result.rows[0])
   } else {
     res.status(404).json({ error: 'Usuario no encontrado' })
@@ -779,56 +658,43 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
 })
 
 app.delete('/usuarios/:id', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const userId = parseInt(req.params.id)
   await dbQuery('UPDATE usuarios_horas SET activo = false WHERE id = $1', [userId])
   usuarios = usuarios.filter(u => u.id !== userId)
-  await registrarLog('warning', 'Usuario eliminado', { id: userId }, req.user.email)
+  registrarLog('warning', 'Usuario eliminado', { id: userId }, req.user.email)
   res.json({ message: 'Usuario eliminado' })
 })
 
 // ===== ROLES ENDPOINTS =====
 app.get('/roles', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   await ensureDefaultRoles()
   
   const result = await dbQuery('SELECT * FROM roles_horas ORDER BY id')
   if (result.success && result.rows.length > 0) {
-    res.json(result.rows.map(r => ({
-      id: r.id, nombre: r.nombre, permisos: Array.isArray(r.permisos) ? r.permisos : []
-    })))
+    res.json(result.rows.map(r => ({ id: r.id, nombre: r.nombre, permisos: Array.isArray(r.permisos) ? r.permisos : [] })))
   } else {
     res.json(roles)
   }
 })
 
 app.put('/roles/:id', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const roleId = parseInt(req.params.id)
   const { permisos } = req.body
   
-  if (!Array.isArray(permisos)) {
-    return res.status(400).json({ error: 'permisos debe ser un array' })
-  }
+  if (!Array.isArray(permisos)) return res.status(400).json({ error: 'permisos debe ser un array' })
   
-  const result = await dbQuery(
-    'UPDATE roles_horas SET permisos = $1 WHERE id = $2 RETURNING *',
-    [JSON.stringify(permisos), roleId]
-  )
+  const result = await dbQuery('UPDATE roles_horas SET permisos = $1 WHERE id = $2 RETURNING *', [JSON.stringify(permisos), roleId])
   
   if (result.success && result.rows.length > 0) {
     const idx = roles.findIndex(r => r.id === roleId)
     if (idx !== -1) roles[idx].permisos = permisos
-    await registrarLog('info', 'Permisos de rol actualizados', { roleId, permisos: permisos.length }, req.user.email)
+    registrarLog('info', 'Permisos actualizados', { roleId }, req.user.email)
     res.json({ ...result.rows[0], permisos })
   } else {
     res.status(404).json({ error: 'Rol no encontrado' })
@@ -836,15 +702,10 @@ app.put('/roles/:id', verifyToken, async (req, res) => {
 })
 
 app.post('/roles', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const { nombre, permisos } = req.body
-  
-  if (!nombre || typeof nombre !== 'string') {
-    return res.status(400).json({ error: 'El nombre del rol es obligatorio' })
-  }
+  if (!nombre || typeof nombre !== 'string') return res.status(400).json({ error: 'El nombre del rol es obligatorio' })
   
   const nombreNormalizado = nombre.toLowerCase().trim()
   
@@ -853,26 +714,20 @@ app.post('/roles', verifyToken, async (req, res) => {
     return res.status(400).json({ error: 'Ya existe un rol con ese nombre' })
   }
   
-  const result = await dbQuery(
-    'INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) RETURNING *',
-    [nombreNormalizado, JSON.stringify(permisos || [])]
-  )
+  const result = await dbQuery('INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) RETURNING *', [nombreNormalizado, JSON.stringify(permisos || [])])
   
   if (result.success && result.rows.length > 0) {
     const newRole = { id: result.rows[0].id, nombre: result.rows[0].nombre, permisos: permisos || [] }
     roles.push(newRole)
-    await registrarLog('success', 'Rol creado', { nombre: nombreNormalizado }, req.user.email)
+    registrarLog('success', 'Rol creado', { nombre: nombreNormalizado }, req.user.email)
     res.status(201).json(newRole)
   } else {
-    await registrarLog('error', 'Error creando rol', { nombre: nombreNormalizado, error: result.error }, req.user.email)
-    res.status(500).json({ error: result.error || 'Error al crear rol' })
+    res.status(500).json({ error: 'Error al crear rol' })
   }
 })
 
 app.delete('/roles/:id', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const roleId = parseInt(req.params.id)
   
@@ -886,7 +741,7 @@ app.delete('/roles/:id', verifyToken, async (req, res) => {
   
   await dbQuery('DELETE FROM roles_horas WHERE id = $1', [roleId])
   roles = roles.filter(r => r.id !== roleId)
-  await registrarLog('warning', 'Rol eliminado', { id: roleId }, req.user.email)
+  registrarLog('warning', 'Rol eliminado', { id: roleId }, req.user.email)
   res.json({ message: 'Rol eliminado correctamente' })
 })
 
@@ -895,15 +750,12 @@ app.get('/configuracion', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
     return res.status(403).json({ error: 'No autorizado' })
   }
-  
   await loadCurrentConfig()
   res.json(configuracion)
 })
 
 app.put('/configuracion/empresa', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   await loadCurrentConfig()
   
@@ -914,14 +766,12 @@ app.put('/configuracion/empresa', verifyToken, async (req, res) => {
   if (color_secundario !== undefined) configuracion.empresa.color_secundario = color_secundario
   
   await saveConfig()
-  await registrarLog('info', 'Configuración empresa actualizada', { nombre }, req.user.email)
+  registrarLog('info', 'Config empresa actualizada', { nombre }, req.user.email)
   res.json(configuracion.empresa)
 })
 
 app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   await loadCurrentConfig()
   
@@ -930,14 +780,12 @@ app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
   if (subtitulo !== undefined) configuracion.bienvenida.subtitulo = subtitulo
   
   await saveConfig()
-  await registrarLog('info', 'Configuración bienvenida actualizada', { titulo }, req.user.email)
+  registrarLog('info', 'Config bienvenida actualizada', {}, req.user.email)
   res.json(configuracion.bienvenida)
 })
 
 app.put('/configuracion/idioma', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   await loadCurrentConfig()
   
@@ -946,14 +794,12 @@ app.put('/configuracion/idioma', verifyToken, async (req, res) => {
   if (traducciones !== undefined) configuracion.idioma.traducciones = traducciones
   
   await saveConfig()
-  await registrarLog('info', 'Configuración idioma actualizada', { idioma: idioma_principal }, req.user.email)
+  registrarLog('info', 'Config idioma actualizada', { idioma: idioma_principal }, req.user.email)
   res.json(configuracion.idioma)
 })
 
 app.put('/configuracion/smtp', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   await loadCurrentConfig()
   
@@ -964,15 +810,13 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
   if (contraseña !== undefined) configuracion.smtp.contraseña = contraseña
   
   await saveConfig()
-  await registrarLog('info', 'Configuración SMTP actualizada', { host }, req.user.email)
+  registrarLog('info', 'Config SMTP actualizada', { host }, req.user.email)
   res.json(configuracion.smtp)
 })
 
-// ===== SMTP TEST ENDPOINT =====
+// ===== SMTP TEST =====
 app.post('/smtp/test', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'No autorizado' })
-  }
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
   const { host, puerto, usuario, contraseña, email_destino } = req.body
   
@@ -984,48 +828,44 @@ app.post('/smtp/test', verifyToken, async (req, res) => {
     const nodemailer = require('nodemailer')
     
     const transporter = nodemailer.createTransport({
-      host: host,
-      port: parseInt(puerto) || 587,
-      secure: parseInt(puerto) === 465,
+      host, port: parseInt(puerto) || 587, secure: parseInt(puerto) === 465,
       auth: { user: usuario, pass: contraseña },
-      tls: { rejectUnauthorized: false }
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000
     })
     
     await transporter.verify()
     
     await transporter.sendMail({
-      from: `"GrupLomi Sistema" <${usuario}>`,
+      from: `"GrupLomi" <${usuario}>`,
       to: email_destino,
       subject: '✅ Prueba SMTP - GrupLomi Horas',
-      html: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #0071e3 0%, #0051a2 100%); padding: 30px; border-radius: 12px; text-align: center;">
-          <h1 style="color: white; margin: 0;">✅ Configuración SMTP Correcta</h1>
-        </div>
-      </div>`
+      html: '<h1 style="color:#10b981">✅ Configuración SMTP Correcta</h1><p>Este es un email de prueba.</p>'
     })
     
-    await registrarLog('success', 'Prueba SMTP exitosa', { host, destino: email_destino }, req.user.email)
+    registrarLog('success', 'Prueba SMTP exitosa', { host }, req.user.email)
     res.json({ success: true, message: 'Email enviado correctamente' })
     
   } catch (error) {
     let errorMsg = error.message
     if (error.code === 'EAUTH') errorMsg = 'Error de autenticación'
-    else if (error.code === 'ESOCKET' || error.code === 'ECONNECTION') errorMsg = 'No se pudo conectar al servidor SMTP'
-    else if (error.code === 'ETIMEDOUT') errorMsg = 'Tiempo de conexión agotado'
+    else if (error.code === 'ESOCKET' || error.code === 'ECONNECTION') errorMsg = 'No se pudo conectar'
+    else if (error.code === 'ETIMEDOUT') errorMsg = 'Tiempo agotado'
     
-    await registrarLog('error', 'Prueba SMTP fallida', { host, error: errorMsg }, req.user.email)
+    registrarLog('error', 'Prueba SMTP fallida', { error: errorMsg }, req.user.email)
     res.status(500).json({ error: errorMsg })
   }
 })
 
-// ===== HEALTH ENDPOINT =====
+// ===== HEALTH & DEBUG =====
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', db: 'connected via proxy', version: '3.4', initialized: dbInitialized })
+  res.json({ status: 'ok', version: '3.5', initialized: dbInitialized, logs: logsEnMemoria.length })
 })
 
 app.get('/test-db', async (req, res) => {
   const result = await dbQuery('SELECT 1 as test')
-  res.json({ status: result.success ? 'ok' : 'error', db: 'connected', result: result.rows })
+  res.json({ status: result.success ? 'ok' : 'error', result: result.rows })
 })
 
 app.get('/debug/roles', verifyToken, async (req, res) => {
@@ -1039,22 +879,17 @@ app.use((req, res) => {
 
 // ===== FUNCIONES AUXILIARES =====
 function calcularProximaAlerta(tipo_alerta, fecha_base) {
-  const hoy = fecha_base ? new Date(fecha_base) : new Date()
-  const proxima = new Date(hoy)
-  
+  const proxima = new Date(fecha_base || new Date())
   switch(tipo_alerta) {
     case 'semanal': proxima.setDate(proxima.getDate() + 7); break
     case 'mensual': proxima.setMonth(proxima.getMonth() + 1); break
     case 'trimestral': proxima.setMonth(proxima.getMonth() + 3); break
     case 'anual': proxima.setFullYear(proxima.getFullYear() + 1); break
   }
-  
   return proxima.toISOString().split('T')[0]
 }
 
 const PORT = process.env.PORT || 8000
-app.listen(PORT, () => {
-  console.log('🚀 Backend v3.4 running on port ' + PORT)
-})
+app.listen(PORT, () => console.log('🚀 Backend v3.5 running on port ' + PORT))
 
 module.exports = app
