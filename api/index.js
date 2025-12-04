@@ -174,7 +174,7 @@ async function initializeCache() {
   try {
     await createTables()
     await loadData()
-    registrarLog('success', 'Sistema iniciado', { version: '4.0-turbo' })
+    registrarLog('success', 'Sistema iniciado', { version: '4.1' })
   } catch (error) {
     console.error('Error inicializando:', error.message)
     registrarLog('error', 'Error inicializando', { error: error.message })
@@ -922,11 +922,131 @@ app.post('/smtp/test', verifyToken, async (req, res) => {
   }
 })
 
+// ===== TICKET SOPORTE =====
+app.post('/ticket/enviar', verifyToken, async (req, res) => {
+  const { asunto, descripcion, tipo, adjuntos, usuario } = req.body
+  
+  if (!asunto || !descripcion) {
+    return res.status(400).json({ error: 'Asunto y descripción son requeridos' })
+  }
+  
+  // Obtener configuración SMTP del caché
+  const smtp = CACHE.configuracion?.smtp
+  if (!smtp?.host || !smtp?.usuario || !smtp?.contraseña) {
+    return res.status(400).json({ error: 'SMTP no configurado. Contacta con el administrador.' })
+  }
+  
+  try {
+    const nodemailer = require('nodemailer')
+    
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: parseInt(smtp.puerto) || 587,
+      secure: parseInt(smtp.puerto) === 465,
+      auth: { user: smtp.usuario, pass: smtp.contraseña },
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000
+    })
+    
+    // Preparar adjuntos
+    const attachments = (adjuntos || []).map((adj, index) => {
+      // Extraer base64 data del formato data:image/xxx;base64,xxxxx
+      const matches = adj.data.match(/^data:(.+);base64,(.+)$/)
+      if (matches) {
+        return {
+          filename: adj.nombre || `adjunto_${index + 1}.jpg`,
+          content: matches[2],
+          encoding: 'base64',
+          contentType: matches[1]
+        }
+      }
+      return null
+    }).filter(Boolean)
+    
+    // Iconos para tipos
+    const tipoIcons = {
+      'error': '🐛',
+      'mejora': '💡',
+      'consulta': '❓',
+      'otro': '📝'
+    }
+    
+    const tipoLabels = {
+      'error': 'Error / Bug',
+      'mejora': 'Sugerencia de mejora',
+      'consulta': 'Consulta',
+      'otro': 'Otro'
+    }
+    
+    // Construir HTML del email
+    const htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #0071e3, #5856d6); padding: 20px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 24px;">🎫 Nuevo Ticket de Soporte</h1>
+        </div>
+        
+        <div style="background: #f5f5f7; padding: 25px; border-radius: 0 0 12px 12px;">
+          <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+            <p style="margin: 0 0 10px 0; color: #666;"><strong>Tipo:</strong></p>
+            <p style="margin: 0; font-size: 16px;">${tipoIcons[tipo] || '📝'} ${tipoLabels[tipo] || tipo}</p>
+          </div>
+          
+          <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+            <p style="margin: 0 0 10px 0; color: #666;"><strong>Asunto:</strong></p>
+            <p style="margin: 0; font-size: 18px; font-weight: 600;">${asunto}</p>
+          </div>
+          
+          <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+            <p style="margin: 0 0 10px 0; color: #666;"><strong>Descripción:</strong></p>
+            <p style="margin: 0; white-space: pre-wrap; line-height: 1.6;">${descripcion}</p>
+          </div>
+          
+          <div style="background: white; padding: 20px; border-radius: 10px;">
+            <p style="margin: 0 0 10px 0; color: #666;"><strong>Usuario:</strong></p>
+            <p style="margin: 0;">👤 ${usuario?.nombre || 'N/A'}</p>
+            <p style="margin: 5px 0 0 0; color: #666;">📧 ${usuario?.email || 'N/A'}</p>
+            <p style="margin: 5px 0 0 0; color: #666;">🔑 Rol: ${usuario?.role || 'N/A'}</p>
+          </div>
+          
+          ${attachments.length > 0 ? `
+            <div style="background: white; padding: 20px; border-radius: 10px; margin-top: 15px;">
+              <p style="margin: 0 0 10px 0; color: #666;"><strong>📎 Adjuntos:</strong> ${attachments.length} archivo(s)</p>
+            </div>
+          ` : ''}
+          
+          <p style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+            Ticket enviado desde GrupLomi Horas v4.1<br>
+            ${new Date().toLocaleString('es-ES')}
+          </p>
+        </div>
+      </div>
+    `
+    
+    await transporter.sendMail({
+      from: `"GrupLomi Horas - Ticket" <${smtp.usuario}>`,
+      to: 'suport@gruplomi.com',
+      replyTo: usuario?.email || smtp.usuario,
+      subject: `[Ticket] ${tipoIcons[tipo] || '📝'} ${asunto}`,
+      html: htmlContent,
+      attachments: attachments
+    })
+    
+    registrarLog('success', 'Ticket enviado', { asunto, tipo }, req.user.email)
+    res.json({ success: true, message: 'Ticket enviado correctamente' })
+    
+  } catch (error) {
+    console.error('Error enviando ticket:', error)
+    registrarLog('error', 'Error enviando ticket', { error: error.message }, req.user.email)
+    res.status(500).json({ error: 'Error al enviar el ticket: ' + error.message })
+  }
+})
+
 // ===== HEALTH =====
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '4.0-turbo',
+    version: '4.1',
     cache: {
       usuarios: CACHE.usuarios.length,
       horas: CACHE.horas.length,
@@ -960,6 +1080,6 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
 }
 
 const PORT = process.env.PORT || 8000
-app.listen(PORT, () => console.log(`🚀 Backend v4.0-turbo on port ${PORT}`))
+app.listen(PORT, () => console.log(`🚀 Backend v4.1 on port ${PORT}`))
 
 module.exports = app
