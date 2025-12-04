@@ -111,9 +111,9 @@ CACHE.usuarios = [...DEFAULT_USUARIOS]
 CACHE.roles = [...DEFAULT_ROLES]
 CACHE.configuracion = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
 
-// ===== INICIALIZACIÓN EN SEGUNDO PLANO =====
+// ===== INICIALIZACIÓN CON REINTENTOS =====
 async function initializeCache() {
-  console.log('🚀 Iniciando carga de caché en segundo plano...')
+  console.log('🚀 Iniciando carga de caché...')
   
   // Crear tablas (no bloqueante)
   const createTables = async () => {
@@ -126,57 +126,75 @@ async function initializeCache() {
     await dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`)
   }
   
-  // Cargar datos en paralelo
-  const loadData = async () => {
-    const [configRes, usersRes, rolesRes, horasRes, avisosRes, obrasRes, mantRes] = await Promise.all([
-      dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'"),
-      dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id'),
-      dbQuery('SELECT * FROM roles_horas ORDER BY id'),
-      dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000'),
-      dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC'),
-      dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC'),
-      dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC')
-    ])
-    
-    // Actualizar caché solo si hay datos
-    if (configRes.success && configRes.rows.length > 0) {
-      CACHE.configuracion = { ...DEFAULT_CONFIG, ...configRes.rows[0].valor }
-    }
-    
-    if (usersRes.success && usersRes.rows.length > 0) {
-      CACHE.usuarios = usersRes.rows.map(u => ({
-        id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo
-      }))
-    }
-    
-    if (rolesRes.success && rolesRes.rows.length > 0) {
-      CACHE.roles = rolesRes.rows.map(r => ({
-        id: r.id, nombre: r.nombre, permisos: Array.isArray(r.permisos) ? r.permisos : []
-      }))
-    } else {
-      // Insertar roles por defecto
-      for (const role of DEFAULT_ROLES) {
-        await dbQuery('INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) ON CONFLICT (nombre) DO NOTHING', [role.nombre, JSON.stringify(role.permisos)])
+  // Cargar datos con reintento
+  const loadDataWithRetry = async (maxRetries = 3) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      console.log(`📡 Intento ${attempt}/${maxRetries} de carga desde BD...`)
+      
+      const [configRes, usersRes, rolesRes, horasRes, avisosRes, obrasRes, mantRes] = await Promise.all([
+        dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 20000),
+        dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id', [], 20000),
+        dbQuery('SELECT * FROM roles_horas ORDER BY id', [], 20000),
+        dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 20000),
+        dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC', [], 20000),
+        dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC', [], 20000),
+        dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 20000)
+      ])
+      
+      // Contar éxitos
+      const successes = [configRes, usersRes, rolesRes, horasRes, avisosRes, obrasRes, mantRes].filter(r => r.success).length
+      
+      if (successes >= 4) { // Al menos 4 de 7 consultas exitosas
+        // Actualizar caché con datos válidos
+        if (configRes.success && configRes.rows.length > 0) {
+          CACHE.configuracion = { ...DEFAULT_CONFIG, ...configRes.rows[0].valor }
+        }
+        
+        if (usersRes.success && usersRes.rows.length > 0) {
+          CACHE.usuarios = usersRes.rows.map(u => ({
+            id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo
+          }))
+        }
+        
+        if (rolesRes.success && rolesRes.rows.length > 0) {
+          CACHE.roles = rolesRes.rows.map(r => ({
+            id: r.id, nombre: r.nombre, permisos: Array.isArray(r.permisos) ? r.permisos : []
+          }))
+        } else {
+          // Insertar roles por defecto
+          for (const role of DEFAULT_ROLES) {
+            await dbQuery('INSERT INTO roles_horas (nombre, permisos) VALUES ($1, $2) ON CONFLICT (nombre) DO NOTHING', [role.nombre, JSON.stringify(role.permisos)])
+          }
+        }
+        
+        if (horasRes.success) CACHE.horas = horasRes.rows
+        if (avisosRes.success) CACHE.avisos = avisosRes.rows
+        if (obrasRes.success) CACHE.obras = obrasRes.rows
+        if (mantRes.success) CACHE.mantenimientos = mantRes.rows
+        
+        CACHE.lastSync.all = Date.now()
+        CACHE.initialized = true
+        
+        console.log(`✅ Caché cargado: ${CACHE.usuarios.length} usuarios, ${CACHE.horas.length} horas, SMTP: ${CACHE.configuracion?.smtp?.host || 'no config'}`)
+        return true
       }
+      
+      console.log(`⚠️ Intento ${attempt} parcial (${successes}/7 exitosas), reintentando...`)
+      await new Promise(r => setTimeout(r, 2000)) // Esperar 2s antes de reintentar
     }
     
-    if (horasRes.success) CACHE.horas = horasRes.rows
-    if (avisosRes.success) CACHE.avisos = avisosRes.rows
-    if (obrasRes.success) CACHE.obras = obrasRes.rows
-    if (mantRes.success) CACHE.mantenimientos = mantRes.rows
-    
-    CACHE.lastSync.all = Date.now()
+    console.log('❌ No se pudo cargar caché completo, usando valores por defecto')
     CACHE.initialized = true
-    
-    console.log(`✅ Caché cargado: ${CACHE.usuarios.length} usuarios, ${CACHE.horas.length} horas, ${CACHE.avisos.length} avisos`)
+    return false
   }
   
   try {
     await createTables()
-    await loadData()
-    registrarLog('success', 'Sistema iniciado', { version: '4.1' })
+    await loadDataWithRetry()
+    registrarLog('success', 'Sistema iniciado', { version: '4.3' })
   } catch (error) {
     console.error('Error inicializando:', error.message)
+    CACHE.initialized = true // Marcar como inicializado para evitar bucles
     registrarLog('error', 'Error inicializando', { error: error.message })
   }
 }
@@ -315,7 +333,17 @@ app.get('/auth/me', verifyToken, (req, res) => {
 })
 
 // ===== HORAS ENDPOINTS (DESDE CACHÉ) =====
-app.get('/horas', verifyToken, (req, res) => {
+app.get('/horas', verifyToken, async (req, res) => {
+  // Si el caché está vacío, forzar recarga desde BD
+  if (CACHE.horas.length === 0 && CACHE.initialized) {
+    console.log('⚠️ Caché horas vacío, recargando desde BD...')
+    const horasRes = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 15000)
+    if (horasRes.success) {
+      CACHE.horas = horasRes.rows
+      console.log(`✅ Recargadas ${horasRes.rows.length} horas desde BD`)
+    }
+  }
+  
   let horas = CACHE.horas
   if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
     horas = horas.filter(h => h.usuario_id === req.user.id)
@@ -796,10 +824,21 @@ app.delete('/roles/:id', verifyToken, (req, res) => {
 })
 
 // ===== CONFIGURACIÓN (DESDE CACHÉ) =====
-app.get('/configuracion', verifyToken, (req, res) => {
+app.get('/configuracion', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
     return res.status(403).json({ error: 'No autorizado' })
   }
+  
+  // Si SMTP está vacío, intentar recargar desde BD
+  if (!CACHE.configuracion?.smtp?.host && CACHE.initialized) {
+    console.log('⚠️ Config SMTP vacía, recargando desde BD...')
+    const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 15000)
+    if (configRes.success && configRes.rows.length > 0) {
+      CACHE.configuracion = { ...DEFAULT_CONFIG, ...configRes.rows[0].valor }
+      console.log('✅ Configuración recargada desde BD')
+    }
+  }
+  
   res.json(CACHE.configuracion)
 })
 
@@ -946,6 +985,16 @@ app.post('/ticket/enviar', verifyToken, async (req, res) => {
     return res.status(400).json({ error: 'Asunto y descripción son requeridos' })
   }
   
+  // Si SMTP no está en caché, intentar recargar desde BD
+  if (!CACHE.configuracion?.smtp?.host) {
+    console.log('⚠️ SMTP no en caché, recargando config desde BD...')
+    const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 15000)
+    if (configRes.success && configRes.rows.length > 0) {
+      CACHE.configuracion = { ...DEFAULT_CONFIG, ...configRes.rows[0].valor }
+      console.log('✅ Config recargada para enviar ticket')
+    }
+  }
+  
   // Obtener configuración SMTP del caché
   const smtp = CACHE.configuracion?.smtp
   if (!smtp?.host || !smtp?.usuario || !smtp?.contraseña) {
@@ -1062,7 +1111,7 @@ app.post('/ticket/enviar', verifyToken, async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '4.2',
+    version: '4.3',
     cache: {
       usuarios: CACHE.usuarios.length,
       horas: CACHE.horas.length,
@@ -1157,6 +1206,6 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
 }
 
 const PORT = process.env.PORT || 8000
-app.listen(PORT, () => console.log(`🚀 Backend v4.2 on port ${PORT}`))
+app.listen(PORT, () => console.log(`🚀 Backend v4.3 on port ${PORT}`))
 
 module.exports = app
