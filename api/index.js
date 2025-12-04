@@ -751,23 +751,39 @@ app.get('/configuracion', verifyToken, async (req, res) => {
     return res.status(403).json({ error: 'No autorizado' })
   }
   await loadCurrentConfig()
-  res.json(configuracion)
+  // Devolver config completa incluyendo SMTP (con contraseña enmascarada para seguridad)
+  const configResponse = {
+    ...configuracion,
+    smtp: {
+      host: configuracion.smtp?.host || '',
+      puerto: configuracion.smtp?.puerto || 587,
+      usuario: configuracion.smtp?.usuario || '',
+      contraseña: configuracion.smtp?.contraseña || '' // Devolver para poder rellenar el form
+    }
+  }
+  res.json(configResponse)
 })
 
 app.put('/configuracion/empresa', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   
-  await loadCurrentConfig()
+  // Cargar config actual SIN reemplazar
+  const currentConfig = await loadCurrentConfig()
   
   const { nombre, logo, color_primario, color_secundario } = req.body
+  if (!configuracion.empresa) configuracion.empresa = {}
   if (nombre !== undefined) configuracion.empresa.nombre = nombre
   if (logo !== undefined) configuracion.empresa.logo = logo
   if (color_primario !== undefined) configuracion.empresa.color_primario = color_primario
   if (color_secundario !== undefined) configuracion.empresa.color_secundario = color_secundario
   
-  await saveConfig()
-  registrarLog('info', 'Config empresa actualizada', { nombre }, req.user.email)
-  res.json(configuracion.empresa)
+  const saved = await saveConfig()
+  if (saved) {
+    registrarLog('info', 'Config empresa actualizada', { nombre }, req.user.email)
+    res.json(configuracion.empresa)
+  } else {
+    res.status(500).json({ error: 'Error al guardar' })
+  }
 })
 
 app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
@@ -776,12 +792,17 @@ app.put('/configuracion/bienvenida', verifyToken, async (req, res) => {
   await loadCurrentConfig()
   
   const { titulo, subtitulo } = req.body
+  if (!configuracion.bienvenida) configuracion.bienvenida = {}
   if (titulo !== undefined) configuracion.bienvenida.titulo = titulo
   if (subtitulo !== undefined) configuracion.bienvenida.subtitulo = subtitulo
   
-  await saveConfig()
-  registrarLog('info', 'Config bienvenida actualizada', {}, req.user.email)
-  res.json(configuracion.bienvenida)
+  const saved = await saveConfig()
+  if (saved) {
+    registrarLog('info', 'Config bienvenida actualizada', {}, req.user.email)
+    res.json(configuracion.bienvenida)
+  } else {
+    res.status(500).json({ error: 'Error al guardar' })
+  }
 })
 
 app.put('/configuracion/idioma', verifyToken, async (req, res) => {
@@ -790,12 +811,17 @@ app.put('/configuracion/idioma', verifyToken, async (req, res) => {
   await loadCurrentConfig()
   
   const { idioma_principal, traducciones } = req.body
+  if (!configuracion.idioma) configuracion.idioma = {}
   if (idioma_principal !== undefined) configuracion.idioma.idioma_principal = idioma_principal
   if (traducciones !== undefined) configuracion.idioma.traducciones = traducciones
   
-  await saveConfig()
-  registrarLog('info', 'Config idioma actualizada', { idioma: idioma_principal }, req.user.email)
-  res.json(configuracion.idioma)
+  const saved = await saveConfig()
+  if (saved) {
+    registrarLog('info', 'Config idioma actualizada', { idioma: idioma_principal }, req.user.email)
+    res.json(configuracion.idioma)
+  } else {
+    res.status(500).json({ error: 'Error al guardar' })
+  }
 })
 
 app.put('/configuracion/smtp', verifyToken, async (req, res) => {
@@ -804,14 +830,127 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
   await loadCurrentConfig()
   
   const { host, puerto, usuario, contraseña } = req.body
+  if (!configuracion.smtp) configuracion.smtp = {}
   if (host !== undefined) configuracion.smtp.host = host
   if (puerto !== undefined) configuracion.smtp.puerto = puerto
   if (usuario !== undefined) configuracion.smtp.usuario = usuario
   if (contraseña !== undefined) configuracion.smtp.contraseña = contraseña
   
-  await saveConfig()
-  registrarLog('info', 'Config SMTP actualizada', { host }, req.user.email)
-  res.json(configuracion.smtp)
+  const saved = await saveConfig()
+  if (saved) {
+    registrarLog('info', 'Config SMTP actualizada', { host }, req.user.email)
+    res.json({ ...configuracion.smtp, contraseña: configuracion.smtp.contraseña ? '********' : '' })
+  } else {
+    res.status(500).json({ error: 'Error al guardar' })
+  }
+})
+
+// ===== BORRADO SELECTIVO DE HORAS =====
+app.post('/horas/borrar-masivo', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Solo administradores pueden hacer borrado masivo' })
+  }
+  
+  const { usuario_ids, fecha_desde, fecha_hasta, borrar_todo } = req.body
+  
+  try {
+    let query = 'DELETE FROM horas_trabajo WHERE 1=1'
+    const params = []
+    let paramIndex = 1
+    
+    // Si no es borrar_todo, aplicar filtros
+    if (!borrar_todo) {
+      // Filtrar por usuarios
+      if (usuario_ids && Array.isArray(usuario_ids) && usuario_ids.length > 0) {
+        query += ` AND usuario_id = ANY(${paramIndex}::int[])`
+        params.push(usuario_ids)
+        paramIndex++
+      }
+      
+      // Filtrar por fecha desde
+      if (fecha_desde) {
+        query += ` AND fecha >= ${paramIndex}`
+        params.push(fecha_desde)
+        paramIndex++
+      }
+      
+      // Filtrar por fecha hasta
+      if (fecha_hasta) {
+        query += ` AND fecha <= ${paramIndex}`
+        params.push(fecha_hasta)
+        paramIndex++
+      }
+    }
+    
+    // Primero contar cuántas se borrarán
+    const countQuery = query.replace('DELETE FROM', 'SELECT COUNT(*) as count FROM')
+    const countResult = await dbQuery(countQuery, params)
+    const count = countResult.success ? parseInt(countResult.rows[0]?.count || 0) : 0
+    
+    if (count === 0) {
+      return res.json({ message: 'No hay registros que coincidan con los filtros', deleted: 0 })
+    }
+    
+    // Ejecutar el borrado
+    const result = await dbQuery(query, params)
+    
+    if (result.success) {
+      registrarLog('warning', `Borrado masivo de horas: ${count} registros`, {
+        usuario_ids,
+        fecha_desde,
+        fecha_hasta,
+        borrar_todo
+      }, req.user.email)
+      
+      res.json({ 
+        message: `Se han eliminado ${count} registros de horas`,
+        deleted: count
+      })
+    } else {
+      res.status(500).json({ error: 'Error al ejecutar el borrado' })
+    }
+  } catch (error) {
+    console.error('Error en borrado masivo:', error)
+    res.status(500).json({ error: 'Error en el borrado masivo' })
+  }
+})
+
+// Obtener resumen de horas para el panel de borrado
+app.get('/horas/resumen-borrado', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  try {
+    // Resumen por usuario
+    const porUsuario = await dbQuery(`
+      SELECT h.usuario_id, u.nombre, u.email, COUNT(*) as total_registros, SUM(h.horas) as total_horas
+      FROM horas_trabajo h
+      LEFT JOIN usuarios_horas u ON h.usuario_id = u.id
+      GROUP BY h.usuario_id, u.nombre, u.email
+      ORDER BY u.nombre
+    `)
+    
+    // Resumen por mes
+    const porMes = await dbQuery(`
+      SELECT TO_CHAR(fecha, 'YYYY-MM') as mes, COUNT(*) as total_registros, SUM(horas) as total_horas
+      FROM horas_trabajo
+      GROUP BY TO_CHAR(fecha, 'YYYY-MM')
+      ORDER BY mes DESC
+      LIMIT 12
+    `)
+    
+    // Total general
+    const total = await dbQuery('SELECT COUNT(*) as registros, SUM(horas) as horas FROM horas_trabajo')
+    
+    res.json({
+      por_usuario: porUsuario.success ? porUsuario.rows : [],
+      por_mes: porMes.success ? porMes.rows : [],
+      total: total.success ? total.rows[0] : { registros: 0, horas: 0 }
+    })
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener resumen' })
+  }
 })
 
 // ===== SMTP TEST =====
