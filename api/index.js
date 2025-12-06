@@ -191,7 +191,7 @@ async function initializeCache() {
   try {
     await createTables()
     await loadDataWithRetry()
-    registrarLog('success', 'Sistema iniciado', { version: '4.3' })
+    registrarLog('success', 'Sistema iniciado', { version: '4.4' })
   } catch (error) {
     console.error('Error inicializando:', error.message)
     CACHE.initialized = true // Marcar como inicializado para evitar bucles
@@ -334,13 +334,28 @@ app.get('/auth/me', verifyToken, (req, res) => {
 
 // ===== HORAS ENDPOINTS (DESDE CACHÉ) =====
 app.get('/horas', verifyToken, async (req, res) => {
-  // Si el caché está vacío, forzar recarga desde BD
-  if (CACHE.horas.length === 0 && CACHE.initialized) {
-    console.log('⚠️ Caché horas vacío, recargando desde BD...')
-    const horasRes = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 15000)
-    if (horasRes.success) {
-      CACHE.horas = horasRes.rows
-      console.log(`✅ Recargadas ${horasRes.rows.length} horas desde BD`)
+  // Si el caché está vacío, forzar recarga desde BD con reintentos
+  if (CACHE.horas.length === 0) {
+    console.log('⚠️ Caché horas vacío, intentando recargar...')
+    
+    for (let intento = 1; intento <= 3; intento++) {
+      console.log(`📡 Intento ${intento}/3 cargando horas...`)
+      const horasRes = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 20000)
+      
+      if (horasRes.success && horasRes.rows.length > 0) {
+        CACHE.horas = horasRes.rows
+        console.log(`✅ Recargadas ${horasRes.rows.length} horas desde BD`)
+        break
+      } else if (horasRes.success && horasRes.rows.length === 0) {
+        // BD accesible pero sin datos - es válido
+        console.log('ℹ️ BD accesible, pero no hay horas registradas')
+        break
+      }
+      
+      // Esperar antes de reintentar
+      if (intento < 3) {
+        await new Promise(r => setTimeout(r, 1500))
+      }
     }
   }
   
@@ -1111,7 +1126,7 @@ app.post('/ticket/enviar', verifyToken, async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '4.3',
+    version: '4.4',
     cache: {
       usuarios: CACHE.usuarios.length,
       horas: CACHE.horas.length,
@@ -1206,6 +1221,6 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
 }
 
 const PORT = process.env.PORT || 8000
-app.listen(PORT, () => console.log(`🚀 Backend v4.3 on port ${PORT}`))
+app.listen(PORT, () => console.log(`🚀 Backend v4.4 on port ${PORT}`))
 
 module.exports = app
