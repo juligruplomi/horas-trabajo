@@ -127,18 +127,18 @@ async function initializeCache() {
   }
   
   // Cargar datos con reintento
-  const loadDataWithRetry = async (maxRetries = 3) => {
+  const loadDataWithRetry = async (maxRetries = 2) => {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       console.log(`📡 Intento ${attempt}/${maxRetries} de carga desde BD...`)
       
       const [configRes, usersRes, rolesRes, horasRes, avisosRes, obrasRes, mantRes] = await Promise.all([
-        dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 20000),
-        dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id', [], 20000),
-        dbQuery('SELECT * FROM roles_horas ORDER BY id', [], 20000),
-        dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 20000),
-        dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC', [], 20000),
-        dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC', [], 20000),
-        dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 20000)
+        dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 5000),
+        dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id', [], 5000),
+        dbQuery('SELECT * FROM roles_horas ORDER BY id', [], 5000),
+        dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 5000),
+        dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC', [], 5000),
+        dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC', [], 5000),
+        dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 5000)
       ])
       
       // Contar éxitos
@@ -180,7 +180,7 @@ async function initializeCache() {
       }
       
       console.log(`⚠️ Intento ${attempt} parcial (${successes}/7 exitosas), reintentando...`)
-      await new Promise(r => setTimeout(r, 2000)) // Esperar 2s antes de reintentar
+      await new Promise(r => setTimeout(r, 500)) // Esperar 0.5s antes de reintentar
     }
     
     console.log('❌ No se pudo cargar caché completo, usando valores por defecto')
@@ -334,28 +334,13 @@ app.get('/auth/me', verifyToken, (req, res) => {
 
 // ===== HORAS ENDPOINTS (DESDE CACHÉ) =====
 app.get('/horas', verifyToken, async (req, res) => {
-  // Si el caché está vacío, forzar recarga desde BD con reintentos
+  // Si el caché está vacío, intentar UNA carga rápida (5s max)
   if (CACHE.horas.length === 0) {
-    console.log('⚠️ Caché horas vacío, intentando recargar...')
-    
-    for (let intento = 1; intento <= 3; intento++) {
-      console.log(`📡 Intento ${intento}/3 cargando horas...`)
-      const horasRes = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 20000)
-      
-      if (horasRes.success && horasRes.rows.length > 0) {
-        CACHE.horas = horasRes.rows
-        console.log(`✅ Recargadas ${horasRes.rows.length} horas desde BD`)
-        break
-      } else if (horasRes.success && horasRes.rows.length === 0) {
-        // BD accesible pero sin datos - es válido
-        console.log('ℹ️ BD accesible, pero no hay horas registradas')
-        break
-      }
-      
-      // Esperar antes de reintentar
-      if (intento < 3) {
-        await new Promise(r => setTimeout(r, 1500))
-      }
+    console.log('⚠️ Caché horas vacío, intento rápido...')
+    const horasRes = await dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 5000)
+    if (horasRes.success) {
+      CACHE.horas = horasRes.rows
+      console.log(`✅ Cargadas ${horasRes.rows.length} horas`)
     }
   }
   
@@ -844,13 +829,13 @@ app.get('/configuracion', verifyToken, async (req, res) => {
     return res.status(403).json({ error: 'No autorizado' })
   }
   
-  // Si SMTP está vacío, intentar recargar desde BD
+  // Si SMTP está vacío, intentar recargar desde BD (rápido)
   if (!CACHE.configuracion?.smtp?.host && CACHE.initialized) {
-    console.log('⚠️ Config SMTP vacía, recargando desde BD...')
-    const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 15000)
+    console.log('⚠️ Config SMTP vacía, intento rápido...')
+    const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 5000)
     if (configRes.success && configRes.rows.length > 0) {
       CACHE.configuracion = { ...DEFAULT_CONFIG, ...configRes.rows[0].valor }
-      console.log('✅ Configuración recargada desde BD')
+      console.log('✅ Configuración recargada')
     }
   }
   
@@ -1000,13 +985,13 @@ app.post('/ticket/enviar', verifyToken, async (req, res) => {
     return res.status(400).json({ error: 'Asunto y descripción son requeridos' })
   }
   
-  // Si SMTP no está en caché, intentar recargar desde BD
+  // Si SMTP no está en caché, intentar recargar desde BD (rápido)
   if (!CACHE.configuracion?.smtp?.host) {
-    console.log('⚠️ SMTP no en caché, recargando config desde BD...')
-    const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 15000)
+    console.log('⚠️ SMTP no en caché, intento rápido...')
+    const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 5000)
     if (configRes.success && configRes.rows.length > 0) {
       CACHE.configuracion = { ...DEFAULT_CONFIG, ...configRes.rows[0].valor }
-      console.log('✅ Config recargada para enviar ticket')
+      console.log('✅ Config recargada')
     }
   }
   
@@ -1147,12 +1132,12 @@ app.post('/cache/reload', verifyToken, async (req, res) => {
   
   try {
     const [configRes, usersRes, horasRes, avisosRes, obrasRes, mantRes] = await Promise.all([
-      dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 15000),
-      dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id', [], 15000),
-      dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 15000),
-      dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC', [], 15000),
-      dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC', [], 15000),
-      dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 15000)
+      dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 5000),
+      dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id', [], 5000),
+      dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 5000),
+      dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC', [], 5000),
+      dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC', [], 5000),
+      dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 5000)
     ])
     
     const results = {
