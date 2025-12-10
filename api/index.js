@@ -371,9 +371,15 @@ app.get('/horas', verifyToken, async (req, res) => {
   }
   
   let horas = CACHE.horas
-  if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
+  
+  // Verificar permisos para ver horas de otros
+  const puedeVerOtros = hasPermiso(req.user, 'visualizar_horas_otros') || hasPermiso(req.user, 'supervisar_horas')
+  
+  if (!puedeVerOtros) {
+    // Solo puede ver sus propias horas
     horas = horas.filter(h => h.usuario_id === req.user.id)
   }
+  
   res.json(horas)
 })
 
@@ -406,7 +412,11 @@ app.put('/horas/:id', verifyToken, async (req, res) => {
   const existing = CACHE.horas.find(h => h.id === horaId)
   if (!existing) return res.status(404).json({ error: 'No encontrado' })
   
-  if (existing.usuario_id !== req.user.id && req.user.role === 'operario') {
+  // Verificar permisos: puede editar si es suyo O tiene permiso editar_horas_otros
+  const esSuyo = existing.usuario_id === req.user.id
+  const puedeEditarOtros = hasPermiso(req.user, 'editar_horas_otros')
+  
+  if (!esSuyo && !puedeEditarOtros) {
     return res.status(403).json({ error: 'No autorizado' })
   }
   
@@ -431,7 +441,11 @@ app.delete('/horas/:id', verifyToken, async (req, res) => {
   const existing = CACHE.horas.find(h => h.id === horaId)
   if (!existing) return res.status(404).json({ error: 'No encontrado' })
   
-  if (existing.usuario_id !== req.user.id && req.user.role === 'operario') {
+  // Verificar permisos: puede eliminar si es suyo O tiene permiso editar_horas_otros
+  const esSuyo = existing.usuario_id === req.user.id
+  const puedeEditarOtros = hasPermiso(req.user, 'editar_horas_otros')
+  
+  if (!esSuyo && !puedeEditarOtros) {
     return res.status(403).json({ error: 'No autorizado' })
   }
   
@@ -446,7 +460,10 @@ app.delete('/horas/:id', verifyToken, async (req, res) => {
 })
 
 app.put('/horas/:id/validar', verifyToken, (req, res) => {
-  if (req.user.role === 'operario') return res.status(403).json({ error: 'No autorizado' })
+  // Verificar permiso de supervisar
+  if (!hasPermiso(req.user, 'supervisar_horas')) {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
   
   const horaId = parseInt(req.params.id)
   const { estado } = req.body
