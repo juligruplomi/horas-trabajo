@@ -1200,6 +1200,53 @@ app.get('/test-db', async (req, res) => {
   res.json({ status: result.success ? 'ok' : 'error', latency: result.success ? 'fast' : 'slow' })
 })
 
+// Endpoint de diagnóstico para ver constraints de la tabla
+app.get('/debug/table-info', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  // Verificar constraints de usuarios_horas
+  const constraintsResult = await dbQuery(`
+    SELECT conname, pg_get_constraintdef(oid) as definition 
+    FROM pg_constraint 
+    WHERE conrelid = 'usuarios_horas'::regclass
+  `, [], 10000)
+  
+  // Verificar columnas
+  const columnsResult = await dbQuery(`
+    SELECT column_name, data_type, is_nullable, column_default
+    FROM information_schema.columns 
+    WHERE table_name = 'usuarios_horas'
+  `, [], 10000)
+  
+  res.json({
+    constraints: constraintsResult,
+    columns: columnsResult
+  })
+})
+
+// Endpoint para eliminar CHECK constraint si existe
+app.post('/debug/remove-role-constraint', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  // Buscar y eliminar constraints de tipo CHECK en la columna role
+  const dropResult = await dbQuery(`
+    DO $do$ 
+    DECLARE 
+      r RECORD;
+    BEGIN
+      FOR r IN (
+        SELECT conname FROM pg_constraint 
+        WHERE conrelid = 'usuarios_horas'::regclass 
+        AND contype = 'c'
+      ) LOOP
+        EXECUTE 'ALTER TABLE usuarios_horas DROP CONSTRAINT ' || r.conname;
+      END LOOP;
+    END $do$;
+  `, [], 15000)
+  
+  res.json({ result: dropResult, message: 'CHECK constraints eliminados (si existian)' })
+})
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' })
 })
