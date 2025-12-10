@@ -304,6 +304,17 @@ app.get('/config/public', (req, res) => {
 })
 
 // ===== AUTH ENDPOINTS =====
+// Función helper para obtener permisos del rol
+function getPermisosForRole(roleName) {
+  const rol = CACHE.roles.find(r => r.nombre === roleName)
+  if (rol && rol.permisos) return rol.permisos
+  // Fallback para roles estándar si no están en caché
+  if (roleName === 'admin') return ['agregar_horas', 'editar_horas', 'eliminar_horas', 'supervisar_horas', 'editar_horas_otros', 'visualizar_horas_otros', 'editar_configuracion', 'gestionar_usuarios']
+  if (roleName === 'supervisor') return ['agregar_horas', 'editar_horas', 'eliminar_horas', 'supervisar_horas', 'editar_horas_otros', 'visualizar_horas_otros']
+  if (roleName === 'operario') return ['agregar_horas', 'editar_horas', 'eliminar_horas']
+  return []
+}
+
 app.post('/auth/login', (req, res) => {
   const { email, password } = req.body
   const usuario = CACHE.usuarios.find(u => u.email === email)
@@ -313,8 +324,11 @@ app.post('/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Credenciales inválidas' })
   }
   
+  // Obtener permisos del rol
+  const permisos = getPermisosForRole(usuario.role)
+  
   const token = jwt.sign(
-    { id: usuario.id, email: usuario.email, role: usuario.role, nombre: usuario.nombre },
+    { id: usuario.id, email: usuario.email, role: usuario.role, nombre: usuario.nombre, permisos },
     JWT_SECRET,
     { expiresIn: '24h' }
   )
@@ -322,14 +336,15 @@ app.post('/auth/login', (req, res) => {
   registrarLog('success', 'Login exitoso', { email }, email)
   res.json({
     token,
-    user: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role }
+    user: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role, permisos }
   })
 })
 
 app.get('/auth/me', verifyToken, (req, res) => {
   const usuario = CACHE.usuarios.find(u => u.id === req.user.id)
   if (!usuario) return res.status(404).json({ error: 'User not found' })
-  res.json({ id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role })
+  const permisos = getPermisosForRole(usuario.role)
+  res.json({ id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role, permisos })
 })
 
 // ===== HORAS ENDPOINTS (DESDE CACHÉ) =====
