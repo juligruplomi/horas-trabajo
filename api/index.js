@@ -696,19 +696,30 @@ app.post('/usuarios', verifyToken, async (req, res) => {
   const { email, nombre, role, password } = req.body
   if (!email || !nombre || !role) return res.status(400).json({ error: 'Campos requeridos' })
   
+  // Verificar si el email ya existe
+  const existingUser = CACHE.usuarios.find(u => u.email.toLowerCase() === email.toLowerCase())
+  if (existingUser) {
+    return res.status(400).json({ error: 'El email ya está registrado' })
+  }
+  
   const hashedPassword = bcrypt.hashSync(password || 'TempPassword2025!', 10)
+  
+  console.log('Creando usuario:', { email, nombre, role })
   
   const result = await dbQuery(
     'INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) RETURNING id, email, nombre, role, activo',
     [email, nombre, role, hashedPassword]
   )
   
+  console.log('Resultado INSERT usuario:', result)
+  
   if (result.success && result.rows.length > 0) {
     CACHE.usuarios.push({ ...result.rows[0], password: hashedPassword })
     registrarLog('success', 'Usuario creado', { email }, req.user.email)
     res.status(201).json(result.rows[0])
   } else {
-    res.status(500).json({ error: result.error || 'Error al crear' })
+    console.error('Error creando usuario:', result.error)
+    res.status(500).json({ error: result.error || 'Error al crear usuario en la base de datos' })
   }
 })
 
