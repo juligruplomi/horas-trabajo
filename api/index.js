@@ -257,6 +257,17 @@ const verifyToken = (req, res, next) => {
   }
 }
 
+// Función helper para verificar si el usuario tiene un permiso
+function hasPermiso(user, permiso) {
+  // Si el usuario tiene permisos en el token, usarlos
+  if (user.permisos && Array.isArray(user.permisos)) {
+    return user.permisos.includes(permiso)
+  }
+  // Fallback: obtener permisos del rol desde caché
+  const permisos = getPermisosForRole(user.role)
+  return permisos.includes(permiso)
+}
+
 const verifyAdmin = (req, res, next) => {
   if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
     return res.status(403).json({ error: 'Not authorized' })
@@ -701,12 +712,12 @@ app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
 
 // ===== USUARIOS (DESDE CACHÉ) =====
 app.get('/usuarios', verifyToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false })))
 })
 
 app.post('/usuarios', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const { email, nombre, role, password } = req.body
   if (!email || !nombre || !role) return res.status(400).json({ error: 'Campos requeridos' })
@@ -739,7 +750,7 @@ app.post('/usuarios', verifyToken, async (req, res) => {
 })
 
 app.put('/usuarios/:id', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const userId = parseInt(req.params.id)
   const { email, nombre, role, password } = req.body
@@ -769,24 +780,101 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
   }
 })
 
-app.delete('/usuarios/:id', verifyToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+// Toggle activar/desactivar usuario (soft delete)
+app.put('/usuarios/:id/toggle-activo', verifyToken, async (req, res) => {
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const userId = parseInt(req.params.id)
-  CACHE.usuarios = CACHE.usuarios.filter(u => u.id !== userId)
-  dbWriteAsync('UPDATE usuarios_horas SET activo = false WHERE id = $1', [userId])
-  registrarLog('warning', 'Usuario eliminado', { id: userId }, req.user.email)
-  res.json({ message: 'Eliminado' })
+  
+  // Buscar en BD (incluye inactivos)
+  const userResult = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas WHERE id = $1', [userId])
+  if (!userResult.success || userResult.rows.length === 0) {
+    return res.status(404).json({ error: 'Usuario no encontrado' })
+  }
+  
+  const user = userResult.rows[0]
+  const nuevoEstado = !user.activo
+  
+  const result = await dbQuery(
+    'UPDATE usuarios_horas SET activo = $1 WHERE id = $2 RETURNING id, email, nombre, role, activo',
+    [nuevoEstado, userId]
+  )
+  
+  if (result.success && result.rows.length > 0) {
+    // Actualizar caché
+    if (nuevoEstado) {
+      // Activar: añadir al caché si no está
+      const idx = CACHE.usuarios.findIndex(u => u.id === userId)
+      if (idx === -1) {
+        CACHE.usuarios.push({ ...result.rows[0], password: user.password })
+      } else {
+        CACHE.usuarios[idx].activo = true
+      }
+    } else {
+      // Desactivar: quitar del caché
+      CACHE.usuarios = CACHE.usuarios.filter(u => u.id !== userId)
+    }
+    
+    registrarLog('info', nuevoEstado ? 'Usuario activado' : 'Usuario desactivado', { id: userId, email: user.email }, req.user.email)
+    res.json(result.rows[0])
+  } else {
+    res.status(500).json({ error: 'Error al actualizar' })
+  }
+})
+
+// Obtener todos los usuarios (incluyendo inactivos) para gestión
+app.get('/usuarios/todos', verifyToken, async (req, res) => {
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
+  
+  const result = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas ORDER BY activo DESC, nombre')
+  if (result.success) {
+    res.json(result.rows)
+  } else {
+    // Fallback al caché
+    res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false })))
+  }
+})
+
+// Eliminar usuario PERMANENTEMENTE
+app.delete('/usuarios/:id', verifyToken, async (req, res) => {
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
+  
+  const userId = parseInt(req.params.id)
+  
+  // Verificar que no sea el propio usuario
+  if (userId === req.user.id) {
+    return res.status(400).json({ error: 'No puedes eliminarte a ti mismo' })
+  }
+  
+  // Verificar que el usuario existe
+  const userResult = await dbQuery('SELECT email, nombre FROM usuarios_horas WHERE id = $1', [userId])
+  if (!userResult.success || userResult.rows.length === 0) {
+    return res.status(404).json({ error: 'Usuario no encontrado' })
+  }
+  
+  const userEmail = userResult.rows[0].email
+  
+  // Eliminar permanentemente de la BD
+  const result = await dbQuery('DELETE FROM usuarios_horas WHERE id = $1', [userId])
+  
+  if (result.success) {
+    // Eliminar del caché
+    CACHE.usuarios = CACHE.usuarios.filter(u => u.id !== userId)
+    registrarLog('warning', 'Usuario eliminado permanentemente', { id: userId, email: userEmail }, req.user.email)
+    res.json({ message: 'Usuario eliminado permanentemente' })
+  } else {
+    res.status(500).json({ error: 'Error al eliminar' })
+  }
 })
 
 // ===== ROLES (DESDE CACHÉ) =====
 app.get('/roles', verifyToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   res.json(CACHE.roles)
 })
 
 app.put('/roles/:id', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const roleId = parseInt(req.params.id)
   const { permisos } = req.body
@@ -807,7 +895,7 @@ app.put('/roles/:id', verifyToken, async (req, res) => {
 })
 
 app.post('/roles', verifyToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const { nombre, permisos } = req.body
   if (!nombre) return res.status(400).json({ error: 'Nombre requerido' })
@@ -834,7 +922,7 @@ app.post('/roles', verifyToken, async (req, res) => {
 })
 
 app.delete('/roles/:id', verifyToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const roleId = parseInt(req.params.id)
   const role = CACHE.roles.find(r => r.id === roleId)
