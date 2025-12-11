@@ -416,7 +416,7 @@ async function initializeCache() {
   try {
     await createTables()
     await loadDataWithRetry()
-    registrarLog('success', 'Sistema iniciado', { version: '4.4' })
+    registrarLog('success', 'Sistema iniciado', { version: '5.0' })
   } catch (error) {
     console.error('Error inicializando:', error.message)
     CACHE.initialized = true // Marcar como inicializado para evitar bucles
@@ -1717,7 +1717,17 @@ app.post('/ticket/enviar', verifyToken, async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '4.4',
+    version: '5.0',
+    security: {
+      helmet: true,
+      cors_restricted: true,
+      rate_limiting: true,
+      login_blocking: true,
+      input_validation: true,
+      https_redirect: CONFIG.NODE_ENV === 'production',
+      audit_logging: true,
+      env_configured: !CONFIG.JWT_SECRET.includes('CHANGE_IN_PRODUCTION')
+    },
     cache: {
       usuarios: CACHE.usuarios.length,
       horas: CACHE.horas.length,
@@ -1859,6 +1869,6 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
 }
 
 const PORT = process.env.PORT || 8000
-app.listen(PORT, () => console.log(`🚀 Backend v4.4 on port ${PORT}`))
+app.listen(PORT, () => console.log(`🚀 Backend v5.0 on port ${PORT}`))
 
 module.exports = app

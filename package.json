@@ -1,7 +1,7 @@
 {
   "name": "horas-trabajo-backend",
-  "version": "3.5.0",
-  "description": "Backend para Sistema de Control de Horas",
+  "version": "5.0.0",
+  "description": "Backend para Sistema de Control de Horas - Con seguridad avanzada",
   "main": "api/index.js",
   "scripts": {
     "dev": "node api/index.js",
