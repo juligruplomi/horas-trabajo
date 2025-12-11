@@ -884,6 +884,81 @@ app.delete('/usuarios/:id', verifyToken, async (req, res) => {
   }
 })
 
+// Enviar contraseña por email
+app.post('/usuarios/enviar-contrasena', verifyToken, async (req, res) => {
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
+  
+  const { email, nombre, password } = req.body
+  if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' })
+  
+  // Obtener configuración SMTP
+  const smtp = CACHE.configuracion?.smtp
+  if (!smtp || !smtp.host || !smtp.usuario || !smtp.contraseña) {
+    return res.status(400).json({ error: 'SMTP no configurado. Configura SMTP en Configuración > SMTP' })
+  }
+  
+  try {
+    const nodemailer = require('nodemailer')
+    
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.puerto || 587,
+      secure: smtp.puerto === 465,
+      auth: {
+        user: smtp.usuario,
+        pass: smtp.contraseña
+      }
+    })
+    
+    const htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #0071e3, #5856d6); padding: 30px; border-radius: 16px 16px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 24px;">⏱️ GrupLomi Horas</h1>
+        </div>
+        <div style="background: #f5f5f7; padding: 30px; border-radius: 0 0 16px 16px;">
+          <h2 style="color: #1d1d1f; margin-top: 0;">Hola ${nombre || 'Usuario'},</h2>
+          <p style="color: #424245; font-size: 16px; line-height: 1.6;">
+            Se ha generado una nueva contraseña para tu cuenta en el sistema de control de horas de GrupLomi.
+          </p>
+          <div style="background: white; border-radius: 12px; padding: 20px; margin: 20px 0; text-align: center;">
+            <p style="color: #666; margin: 0 0 10px 0; font-size: 14px;">Tu nueva contraseña es:</p>
+            <p style="color: #0071e3; font-size: 28px; font-weight: bold; font-family: monospace; margin: 0; letter-spacing: 2px;">${password}</p>
+          </div>
+          <p style="color: #424245; font-size: 16px; line-height: 1.6;">
+            Puedes acceder a la aplicación desde:
+          </p>
+          <div style="text-align: center; margin: 20px 0;">
+            <a href="https://horas.gruplomi.com" style="background: linear-gradient(135deg, #0071e3, #5856d6); color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-weight: 600; display: inline-block;">
+              Ir a GrupLomi Horas
+            </a>
+          </div>
+          <p style="color: #86868b; font-size: 14px; margin-top: 30px;">
+            Te recomendamos cambiar esta contraseña después de iniciar sesión.
+          </p>
+        </div>
+        <p style="color: #86868b; font-size: 12px; text-align: center; margin-top: 20px;">
+          Este email fue enviado automáticamente por GrupLomi Horas.
+        </p>
+      </div>
+    `
+    
+    await transporter.sendMail({
+      from: `"GrupLomi Horas" <${smtp.usuario}>`,
+      to: email,
+      subject: '🔑 Tu nueva contraseña - GrupLomi Horas',
+      html: htmlContent
+    })
+    
+    registrarLog('success', 'Contraseña enviada por email', { email }, req.user.email)
+    res.json({ message: 'Contraseña enviada correctamente' })
+    
+  } catch (err) {
+    console.error('Error enviando email:', err)
+    registrarLog('error', 'Error enviando contraseña', { email, error: err.message }, req.user.email)
+    res.status(500).json({ error: 'Error al enviar email: ' + err.message })
+  }
+})
+
 // ===== ROLES (DESDE CACHÉ) =====
 app.get('/roles', verifyToken, (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
