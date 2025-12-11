@@ -321,6 +321,14 @@ app.get('/config/public', (req, res) => {
   })
 })
 
+// Configuración para usuarios autenticados (sin datos sensibles como SMTP)
+app.get('/config/user', verifyToken, (req, res) => {
+  res.json({
+    bienvenida: CACHE.configuracion?.bienvenida || DEFAULT_CONFIG.bienvenida,
+    empresa: CACHE.configuracion?.empresa || DEFAULT_CONFIG.empresa
+  })
+})
+
 // ===== AUTH ENDPOINTS =====
 // Función helper para obtener permisos del rol
 function getPermisosForRole(roleName) {
