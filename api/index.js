@@ -319,9 +319,11 @@ async function initializeCache() {
     // Añadir columnas si no existen (para BD existentes)
     await dbQuery(`ALTER TABLE usuarios_horas ADD COLUMN IF NOT EXISTS idioma_preferido VARCHAR(10) DEFAULT 'es'`)
     await dbQuery(`ALTER TABLE usuarios_horas ADD COLUMN IF NOT EXISTS modo_oscuro BOOLEAN DEFAULT false`)
+    await dbQuery(`ALTER TABLE usuarios_horas ADD COLUMN IF NOT EXISTS codigo_trabajador VARCHAR(20)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS horas_trabajo (id SERIAL PRIMARY KEY, usuario_id INTEGER, fecha DATE NOT NULL, tipo_trabajo VARCHAR(50) NOT NULL, numero_aviso VARCHAR(100), horas DECIMAL(4,2) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'pendiente', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS avisos_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
-    await dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+    await dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, numero_gomanage VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+    await dbQuery(`ALTER TABLE obras_trabajo ADD COLUMN IF NOT EXISTS numero_gomanage VARCHAR(50)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (id SERIAL PRIMARY KEY, descripcion TEXT NOT NULL, cliente VARCHAR(255) NOT NULL, tipo_alerta VARCHAR(20), primera_alerta DATE, proxima_alerta DATE, estado VARCHAR(20) DEFAULT 'activo', alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`)
     // Tabla de logs de seguridad persistentes
@@ -377,7 +379,8 @@ async function initializeCache() {
           CACHE.usuarios = usersRes.rows.map(u => ({
             id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo,
             idioma_preferido: u.idioma_preferido || 'es',
-            modo_oscuro: u.modo_oscuro || false
+            modo_oscuro: u.modo_oscuro || false,
+            codigo_trabajador: u.codigo_trabajador || null
           }))
         }
         
@@ -451,7 +454,8 @@ function refreshCache(type) {
             CACHE.usuarios = usersRes.rows.map(u => ({
               id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo,
               idioma_preferido: u.idioma_preferido || 'es',
-              modo_oscuro: u.modo_oscuro || false
+              modo_oscuro: u.modo_oscuro || false,
+              codigo_trabajador: u.codigo_trabajador || null
             }))
           }
           break
@@ -989,14 +993,14 @@ app.get('/obras/activas', verifyToken, (req, res) => {
 })
 
 app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
-  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email } = req.body
+  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
     return res.status(400).json({ error: 'Campos requeridos' })
   }
   
   const result = await dbQuery(
-    'INSERT INTO obras_trabajo (numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-    [numero, cliente, descripcion, estado || 'en_curso', fecha, fecha_fin_estimada || null, JSON.stringify(alertas_email || [])]
+    'INSERT INTO obras_trabajo (numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+    [numero, cliente, descripcion, estado || 'en_curso', fecha, fecha_fin_estimada || null, JSON.stringify(alertas_email || []), numero_gomanage || null]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1010,11 +1014,11 @@ app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
 
 app.put('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
   const id = parseInt(req.params.id)
-  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email } = req.body
+  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage } = req.body
   
   const result = await dbQuery(
-    'UPDATE obras_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, fecha_fin_estimada=$6, alertas_email=$7 WHERE id=$8 RETURNING *',
-    [numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, JSON.stringify(alertas_email || []), id]
+    'UPDATE obras_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, fecha_fin_estimada=$6, alertas_email=$7, numero_gomanage=$8 WHERE id=$9 RETURNING *',
+    [numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, JSON.stringify(alertas_email || []), numero_gomanage || null, id]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1102,7 +1106,7 @@ app.get('/usuarios', verifyToken, (req, res) => {
 app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
-  const { email, nombre, role, password } = req.body
+  const { email, nombre, role, password, codigo_trabajador } = req.body
   
   // Validar email
   const cleanEmail = sanitizeEmail(email)
@@ -1129,12 +1133,13 @@ app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   }
   
   const hashedPassword = bcrypt.hashSync(password || 'TempPassword2025!', 10)
+  const cleanCodigoTrabajador = codigo_trabajador ? sanitizeString(codigo_trabajador, 20) : null
   
-  console.log('Creando usuario:', { email: cleanEmail, nombre: cleanNombre, role })
+  console.log('Creando usuario:', { email: cleanEmail, nombre: cleanNombre, role, codigo_trabajador: cleanCodigoTrabajador })
   
   const result = await dbQuery(
-    'INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) RETURNING id, email, nombre, role, activo',
-    [cleanEmail, cleanNombre, role, hashedPassword]
+    'INSERT INTO usuarios_horas (email, nombre, role, password, codigo_trabajador) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, nombre, role, activo, codigo_trabajador',
+    [cleanEmail, cleanNombre, role, hashedPassword, cleanCodigoTrabajador]
   )
   
   console.log('Resultado INSERT usuario:', result)
@@ -1155,20 +1160,22 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const userId = parseInt(req.params.id)
-  const { email, nombre, role, password } = req.body
+  const { email, nombre, role, password, codigo_trabajador } = req.body
   
   // Guardar datos anteriores para auditoría
   const usuarioAnterior = CACHE.usuarios.find(u => u.id === userId)
-  const datosAnteriores = usuarioAnterior ? { email: usuarioAnterior.email, nombre: usuarioAnterior.nombre, role: usuarioAnterior.role } : null
+  const datosAnteriores = usuarioAnterior ? { email: usuarioAnterior.email, nombre: usuarioAnterior.nombre, role: usuarioAnterior.role, codigo_trabajador: usuarioAnterior.codigo_trabajador } : null
+  
+  const cleanCodigoTrabajador = codigo_trabajador !== undefined ? (codigo_trabajador ? sanitizeString(codigo_trabajador, 20) : null) : (usuarioAnterior?.codigo_trabajador || null)
   
   let query, params
   if (password) {
     const hashedPassword = bcrypt.hashSync(password, 10)
-    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, password=$4 WHERE id=$5 RETURNING id, email, nombre, role, activo'
-    params = [email, nombre, role, hashedPassword, userId]
+    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, password=$4, codigo_trabajador=$5 WHERE id=$6 RETURNING id, email, nombre, role, activo, codigo_trabajador'
+    params = [email, nombre, role, hashedPassword, cleanCodigoTrabajador, userId]
   } else {
-    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3 WHERE id=$4 RETURNING id, email, nombre, role, activo'
-    params = [email, nombre, role, userId]
+    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, codigo_trabajador=$4 WHERE id=$5 RETURNING id, email, nombre, role, activo, codigo_trabajador'
+    params = [email, nombre, role, cleanCodigoTrabajador, userId]
   }
   
   const result = await dbQuery(query, params)
@@ -1176,12 +1183,12 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
   if (result.success && result.rows.length > 0) {
     const idx = CACHE.usuarios.findIndex(u => u.id === userId)
     if (idx !== -1) {
-      CACHE.usuarios[idx] = { ...CACHE.usuarios[idx], email, nombre, role }
+      CACHE.usuarios[idx] = { ...CACHE.usuarios[idx], email, nombre, role, codigo_trabajador: cleanCodigoTrabajador }
       if (password) CACHE.usuarios[idx].password = bcrypt.hashSync(password, 10)
     }
     registrarLog('info', 'Usuario actualizado', { id: userId }, req.user.email)
     // Auditoría
-    registrarAuditoria(req, 'EDITAR_USUARIO', 'usuarios', userId, datosAnteriores, { email, nombre, role, passwordChanged: !!password })
+    registrarAuditoria(req, 'EDITAR_USUARIO', 'usuarios', userId, datosAnteriores, { email, nombre, role, codigo_trabajador: cleanCodigoTrabajador, passwordChanged: !!password })
     res.json(result.rows[0])
   } else {
     res.status(404).json({ error: 'No encontrado' })
@@ -1867,6 +1874,195 @@ function calcularProximaAlerta(tipo_alerta, fecha_base) {
   }
   return proxima.toISOString().split('T')[0]
 }
+
+// ===== EXPORTACIÓN GOMANAGE =====
+app.get('/exportar/gomanage', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { mes, anio, obra_id } = req.query
+    
+    if (!mes || !anio) {
+      return res.status(400).json({ error: 'Mes y año son requeridos' })
+    }
+    
+    const mesNum = parseInt(mes)
+    const anioNum = parseInt(anio)
+    
+    // Obtener el rango de fechas del mes
+    const fechaInicio = new Date(anioNum, mesNum - 1, 1)
+    const fechaFin = new Date(anioNum, mesNum, 0) // Último día del mes
+    const fechaInicioStr = fechaInicio.toISOString().split('T')[0]
+    const fechaFinStr = fechaFin.toISOString().split('T')[0]
+    
+    // Obtener las horas del mes que sean de tipo "obra"
+    let horasFiltradas = CACHE.horas.filter(h => {
+      const fechaHora = new Date(h.fecha)
+      const esDelMes = fechaHora >= fechaInicio && fechaHora <= fechaFin
+      const esObra = h.tipo_trabajo === 'obra'
+      return esDelMes && esObra
+    })
+    
+    // Si se especifica una obra, filtrar por ella
+    if (obra_id) {
+      const obraSeleccionada = CACHE.obras.find(o => o.id === parseInt(obra_id))
+      if (obraSeleccionada) {
+        horasFiltradas = horasFiltradas.filter(h => h.numero_aviso === obraSeleccionada.numero)
+      }
+    }
+    
+    // Agrupar por usuario
+    const horasPorUsuario = {}
+    for (const hora of horasFiltradas) {
+      const usuario = CACHE.usuarios.find(u => u.id === hora.usuario_id)
+      if (!usuario || !usuario.codigo_trabajador) continue
+      
+      // Buscar la obra relacionada
+      const obra = CACHE.obras.find(o => o.numero === hora.numero_aviso)
+      if (!obra || !obra.numero_gomanage) continue
+      
+      const key = usuario.id
+      if (!horasPorUsuario[key]) {
+        horasPorUsuario[key] = {
+          usuario,
+          obra,
+          horas: []
+        }
+      }
+      horasPorUsuario[key].horas.push(hora)
+    }
+    
+    // Generar datos para el Excel
+    const rows = []
+    const mesStr = mesNum.toString().padStart(2, '0')
+    const anioStr = anioNum.toString().slice(-2)
+    const fechaCreacion = new Date(anioNum, mesNum, 0) // Último día del mes
+    
+    for (const key in horasPorUsuario) {
+      const { usuario, obra, horas } = horasPorUsuario[key]
+      const codigoTrabajador = usuario.codigo_trabajador
+      const nroParte = `${codigoTrabajador}-${mesStr}${anioStr}`
+      
+      // Cabecera del trabajador (Tip Reg = 1)
+      rows.push({
+        'Tip Reg': 1,
+        'Nº Parte': nroParte,
+        'Obra': parseFloat(obra.numero_gomanage),
+        'Fecha Creacion': fechaCreacion,
+        'Fecha Imputacion Linea': null,
+        'orden linea': null,
+        'Cod. Art': null,
+        'Descripción': usuario.nombre.toUpperCase(),
+        'Cant.': null,
+        'Descripcion Texto': null,
+        'Capitulo': null,
+        'Operario': null,
+        'CATEGORIA': null,
+        'TIPO': null,
+        'DESCRIPCION': null,
+        'Horas': null
+      })
+      
+      // Ordenar horas por fecha
+      horas.sort((a, b) => new Date(a.fecha) - new Date(b.fecha))
+      
+      // Líneas de detalle (Tip Reg = 2)
+      let ordenLinea = 1
+      for (const hora of horas) {
+        const horasNum = parseFloat(hora.horas)
+        rows.push({
+          'Tip Reg': 2,
+          'Nº Parte': nroParte,
+          'Obra': null,
+          'Fecha Creacion': null,
+          'Fecha Imputacion Linea': new Date(hora.fecha),
+          'orden linea': ordenLinea,
+          'Cod. Art': null,
+          'Descripción': null,
+          'Cant.': horasNum,
+          'Descripcion Texto': `Imputación Horas ${usuario.nombre.toUpperCase()}`,
+          'Capitulo': 25,
+          'Operario': codigoTrabajador,
+          'CATEGORIA': 1,
+          'TIPO': 1,
+          'DESCRIPCION': 'no obligatoria',
+          'Horas': horasNum
+        })
+        ordenLinea++
+      }
+    }
+    
+    // Devolver los datos para que el frontend genere el Excel
+    res.json({
+      success: true,
+      data: rows,
+      meta: {
+        mes: mesNum,
+        anio: anioNum,
+        totalUsuarios: Object.keys(horasPorUsuario).length,
+        totalRegistros: rows.length,
+        nombreArchivo: `GoManage_${mesStr}${anioStr}.xlsx`
+      }
+    })
+    
+    registrarLog('success', 'Exportación GoManage generada', { mes: mesNum, anio: anioNum, registros: rows.length }, req.user.email)
+    
+  } catch (error) {
+    console.error('Error exportando GoManage:', error)
+    registrarLog('error', 'Error exportación GoManage', { error: error.message }, req.user.email)
+    res.status(500).json({ error: 'Error al generar exportación' })
+  }
+})
+
+// Endpoint para verificar qué datos están disponibles para exportar
+app.get('/exportar/gomanage/preview', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { mes, anio } = req.query
+    
+    if (!mes || !anio) {
+      return res.status(400).json({ error: 'Mes y año son requeridos' })
+    }
+    
+    const mesNum = parseInt(mes)
+    const anioNum = parseInt(anio)
+    
+    const fechaInicio = new Date(anioNum, mesNum - 1, 1)
+    const fechaFin = new Date(anioNum, mesNum, 0)
+    
+    // Contar horas de obras en el mes
+    const horasObras = CACHE.horas.filter(h => {
+      const fechaHora = new Date(h.fecha)
+      return fechaHora >= fechaInicio && fechaHora <= fechaFin && h.tipo_trabajo === 'obra'
+    })
+    
+    // Obras con numero_gomanage configurado
+    const obrasConGomanage = CACHE.obras.filter(o => o.numero_gomanage)
+    
+    // Usuarios con codigo_trabajador configurado
+    const usuariosConCodigo = CACHE.usuarios.filter(u => u.codigo_trabajador)
+    
+    // Verificar cuántas horas son exportables (tienen obra con gomanage y usuario con código)
+    const horasExportables = horasObras.filter(h => {
+      const usuario = CACHE.usuarios.find(u => u.id === h.usuario_id)
+      const obra = CACHE.obras.find(o => o.numero === h.numero_aviso)
+      return usuario?.codigo_trabajador && obra?.numero_gomanage
+    })
+    
+    res.json({
+      mes: mesNum,
+      anio: anioNum,
+      totalHorasObras: horasObras.length,
+      horasExportables: horasExportables.length,
+      obrasConGomanage: obrasConGomanage.map(o => ({ id: o.id, numero: o.numero, cliente: o.cliente, numero_gomanage: o.numero_gomanage })),
+      usuariosConCodigo: usuariosConCodigo.map(u => ({ id: u.id, nombre: u.nombre, codigo_trabajador: u.codigo_trabajador })),
+      advertencias: [
+        horasObras.length > horasExportables.length ? `${horasObras.length - horasExportables.length} horas no se exportarán (falta código trabajador o número GoManage)` : null,
+        obrasConGomanage.length === 0 ? 'No hay obras con Número GoManage configurado' : null,
+        usuariosConCodigo.length === 0 ? 'No hay usuarios con Código Trabajador configurado' : null
+      ].filter(Boolean)
+    })
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener preview' })
+  }
+})
 
 const PORT = process.env.PORT || 8000
 app.listen(PORT, () => console.log(`🚀 Backend v5.0 on port ${PORT}`))
