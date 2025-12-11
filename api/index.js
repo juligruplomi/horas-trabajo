@@ -118,7 +118,10 @@ async function initializeCache() {
   // Crear tablas (no bloqueante)
   const createTables = async () => {
     await dbQuery(`CREATE TABLE IF NOT EXISTS configuracion_horas (clave VARCHAR(100) PRIMARY KEY, valor JSONB NOT NULL)`)
-    await dbQuery(`CREATE TABLE IF NOT EXISTS usuarios_horas (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, nombre VARCHAR(255) NOT NULL, role VARCHAR(50) NOT NULL, password VARCHAR(255) NOT NULL, activo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+    await dbQuery(`CREATE TABLE IF NOT EXISTS usuarios_horas (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, nombre VARCHAR(255) NOT NULL, role VARCHAR(50) NOT NULL, password VARCHAR(255) NOT NULL, activo BOOLEAN DEFAULT true, idioma_preferido VARCHAR(10) DEFAULT 'es', modo_oscuro BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+    // Añadir columnas si no existen (para BD existentes)
+    await dbQuery(`ALTER TABLE usuarios_horas ADD COLUMN IF NOT EXISTS idioma_preferido VARCHAR(10) DEFAULT 'es'`)
+    await dbQuery(`ALTER TABLE usuarios_horas ADD COLUMN IF NOT EXISTS modo_oscuro BOOLEAN DEFAULT false`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS horas_trabajo (id SERIAL PRIMARY KEY, usuario_id INTEGER, fecha DATE NOT NULL, tipo_trabajo VARCHAR(50) NOT NULL, numero_aviso VARCHAR(100), horas DECIMAL(4,2) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'pendiente', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS avisos_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
@@ -152,7 +155,9 @@ async function initializeCache() {
         
         if (usersRes.success && usersRes.rows.length > 0) {
           CACHE.usuarios = usersRes.rows.map(u => ({
-            id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo
+            id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo,
+            idioma_preferido: u.idioma_preferido || 'es',
+            modo_oscuro: u.modo_oscuro || false
           }))
         }
         
@@ -224,7 +229,9 @@ function refreshCache(type) {
           const usersRes = await dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id')
           if (usersRes.success && usersRes.rows.length > 0) {
             CACHE.usuarios = usersRes.rows.map(u => ({
-              id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo
+              id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo,
+              idioma_preferido: u.idioma_preferido || 'es',
+              modo_oscuro: u.modo_oscuro || false
             }))
           }
           break
@@ -347,7 +354,16 @@ app.post('/auth/login', (req, res) => {
   registrarLog('success', 'Login exitoso', { email }, email)
   res.json({
     token,
-    user: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role, permisos }
+    user: { 
+      id: usuario.id, 
+      email: usuario.email, 
+      nombre: usuario.nombre, 
+      role: usuario.role, 
+      permisos,
+      // Preferencias del usuario
+      idioma_preferido: usuario.idioma_preferido || 'es',
+      modo_oscuro: usuario.modo_oscuro || false
+    }
   })
 })
 
@@ -355,7 +371,42 @@ app.get('/auth/me', verifyToken, (req, res) => {
   const usuario = CACHE.usuarios.find(u => u.id === req.user.id)
   if (!usuario) return res.status(404).json({ error: 'User not found' })
   const permisos = getPermisosForRole(usuario.role)
-  res.json({ id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role, permisos })
+  res.json({ 
+    id: usuario.id, 
+    email: usuario.email, 
+    nombre: usuario.nombre, 
+    role: usuario.role, 
+    permisos,
+    idioma_preferido: usuario.idioma_preferido || 'es',
+    modo_oscuro: usuario.modo_oscuro || false
+  })
+})
+
+// Actualizar preferencias del usuario (idioma y modo oscuro)
+app.put('/auth/preferencias', verifyToken, async (req, res) => {
+  const { idioma_preferido, modo_oscuro } = req.body
+  
+  const result = await dbQuery(
+    'UPDATE usuarios_horas SET idioma_preferido = COALESCE($1, idioma_preferido), modo_oscuro = COALESCE($2, modo_oscuro) WHERE id = $3 RETURNING *',
+    [idioma_preferido, modo_oscuro, req.user.id]
+  )
+  
+  if (result.success && result.rows.length > 0) {
+    // Actualizar caché
+    const idx = CACHE.usuarios.findIndex(u => u.id === req.user.id)
+    if (idx !== -1) {
+      if (idioma_preferido !== undefined) CACHE.usuarios[idx].idioma_preferido = idioma_preferido
+      if (modo_oscuro !== undefined) CACHE.usuarios[idx].modo_oscuro = modo_oscuro
+    }
+    
+    res.json({ 
+      message: 'Preferencias actualizadas',
+      idioma_preferido: result.rows[0].idioma_preferido,
+      modo_oscuro: result.rows[0].modo_oscuro
+    })
+  } else {
+    res.status(500).json({ error: 'Error actualizando preferencias' })
+  }
 })
 
 // ===== HORAS ENDPOINTS (DESDE CACHÉ) =====
