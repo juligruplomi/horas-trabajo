@@ -46,6 +46,7 @@ app.use(helmet({
 const allowedOrigins = [
   'https://horas.gruplomi.com',
   'https://apphoras.gruplomi.com',
+  'https://horas-trabajo-frontend.vercel.app',
   'http://localhost:5173',
   'http://localhost:3000'
 ]
