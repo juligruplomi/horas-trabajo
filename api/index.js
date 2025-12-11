@@ -1,3 +1,6 @@
+// Cargar variables de entorno
+require('dotenv').config()
+
 const express = require('express')
 const cors = require('cors')
 const bodyParser = require('body-parser')
@@ -10,6 +13,26 @@ const rateLimit = require('express-rate-limit')
 const validator = require('validator')
 
 const app = express()
+
+// ===== CONFIGURACIÓN DESDE VARIABLES DE ENTORNO =====
+const CONFIG = {
+  PROXY_URL: process.env.PROXY_URL || 'http://185.194.59.40:3001',
+  PROXY_API_KEY: process.env.PROXY_API_KEY || 'GrupLomi2024ProxySecureKey_XyZ789',
+  JWT_SECRET: process.env.JWT_SECRET_KEY || 'HorasTrabajo_JWT_Secret_2025_CHANGE_IN_PRODUCTION',
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  PORT: process.env.PORT || 3000
+}
+
+// Advertencia si se usan valores por defecto en producción
+if (CONFIG.NODE_ENV === 'production') {
+  if (CONFIG.JWT_SECRET.includes('CHANGE_IN_PRODUCTION')) {
+    console.error('❌ ERROR CRÍTICO: JWT_SECRET no configurado en producción!')
+    console.error('   Configura JWT_SECRET_KEY en variables de entorno')
+  }
+  if (CONFIG.PROXY_API_KEY === 'GrupLomi2024ProxySecureKey_XyZ789') {
+    console.warn('⚠️ ADVERTENCIA: Usando PROXY_API_KEY por defecto')
+  }
+}
 
 // ===== CONFIGURACIÓN DE SEGURIDAD =====
 
@@ -113,6 +136,17 @@ setInterval(() => {
 // Body parser con límite
 app.use(bodyParser.json({ limit: '5mb' })) // Reducido de 10mb a 5mb
 
+// Forzar HTTPS en producción
+if (CONFIG.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    // Vercel/proxy maneja HTTPS, verificar header
+    if (req.headers['x-forwarded-proto'] !== 'https') {
+      return res.redirect(301, `https://${req.headers.host}${req.url}`)
+    }
+    next()
+  })
+}
+
 // ===== FUNCIONES DE VALIDACIÓN =====
 function sanitizeEmail(email) {
   if (!email || typeof email !== 'string') return null
@@ -134,10 +168,6 @@ function validatePassword(password) {
          /[0-9]/.test(password)
 }
 
-const PROXY_URL = process.env.PROXY_URL || 'http://185.194.59.40:3001'
-const PROXY_API_KEY = process.env.PROXY_API_KEY || 'GrupLomi2024ProxySecureKey_XyZ789'
-const JWT_SECRET = process.env.JWT_SECRET_KEY || 'HorasTrabajo_JWT_Secret_2025'
-
 // ===== SISTEMA DE CACHÉ ULTRA-RÁPIDO =====
 const CACHE = {
   usuarios: [],
@@ -158,19 +188,62 @@ const CACHE_TTL = 5 * 60 * 1000
 const logsEnMemoria = []
 const MAX_LOGS = 200
 
-function registrarLog(tipo, accion, detalles = {}, usuario = null) {
+function registrarLog(tipo, accion, detalles = {}, usuario = null, ip = null) {
   const log = {
     id: Date.now(),
     tipo,
     accion,
     detalles: typeof detalles === 'string' ? detalles : JSON.stringify(detalles),
     usuario: usuario || 'sistema',
+    ip: ip || null,
     fecha: new Date().toISOString()
   }
   logsEnMemoria.unshift(log)
   if (logsEnMemoria.length > MAX_LOGS) logsEnMemoria.pop()
   console.log(`${tipo === 'error' ? '❌' : tipo === 'success' ? '✅' : 'ℹ️'} ${accion}`)
+  
+  // Guardar en BD para logs de seguridad (warning y error)
+  if (tipo === 'warning' || tipo === 'error' || tipo === 'security') {
+    dbWriteAsync(
+      'INSERT INTO logs_seguridad (tipo, accion, usuario, ip, detalles) VALUES ($1, $2, $3, $4, $5)',
+      [tipo, accion, usuario, ip, JSON.stringify(detalles)]
+    )
+  }
+  
   return log
+}
+
+// ===== SISTEMA DE AUDITORÍA =====
+function registrarAuditoria(req, accion, entidad, entidadId, datosAnteriores = null, datosNuevos = null) {
+  const auditoria = {
+    usuario_id: req.user?.id,
+    usuario_email: req.user?.email,
+    accion,
+    entidad,
+    entidad_id: entidadId,
+    datos_anteriores: datosAnteriores,
+    datos_nuevos: datosNuevos,
+    ip: req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress
+  }
+  
+  // Guardar en BD en segundo plano
+  dbWriteAsync(
+    `INSERT INTO auditoria (usuario_id, usuario_email, accion, entidad, entidad_id, datos_anteriores, datos_nuevos, ip) 
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      auditoria.usuario_id,
+      auditoria.usuario_email,
+      auditoria.accion,
+      auditoria.entidad,
+      auditoria.entidad_id,
+      JSON.stringify(auditoria.datos_anteriores),
+      JSON.stringify(auditoria.datos_nuevos),
+      auditoria.ip
+    ]
+  )
+  
+  console.log(`📝 Auditoría: ${auditoria.usuario_email} - ${accion} - ${entidad}:${entidadId}`)
+  return auditoria
 }
 
 // ===== QUERY CON TIMEOUT CORTO Y FALLBACK =====
@@ -179,9 +252,9 @@ async function dbQuery(text, params = [], timeout = 8000) {
   const timeoutId = setTimeout(() => controller.abort(), timeout)
   
   try {
-    const response = await fetch(`${PROXY_URL}/query`, {
+    const response = await fetch(`${CONFIG.PROXY_URL}/query`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': PROXY_API_KEY },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': CONFIG.PROXY_API_KEY },
       body: JSON.stringify({ text, params }),
       signal: controller.signal
     })
@@ -250,6 +323,29 @@ async function initializeCache() {
     await dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (id SERIAL PRIMARY KEY, descripcion TEXT NOT NULL, cliente VARCHAR(255) NOT NULL, tipo_alerta VARCHAR(20), primera_alerta DATE, proxima_alerta DATE, estado VARCHAR(20) DEFAULT 'activo', alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`)
+    // Tabla de logs de seguridad persistentes
+    await dbQuery(`CREATE TABLE IF NOT EXISTS logs_seguridad (
+      id SERIAL PRIMARY KEY,
+      tipo VARCHAR(20) NOT NULL,
+      accion VARCHAR(100) NOT NULL,
+      usuario VARCHAR(255),
+      ip VARCHAR(45),
+      detalles JSONB,
+      fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`)
+    // Tabla de auditoría de acciones sensibles
+    await dbQuery(`CREATE TABLE IF NOT EXISTS auditoria (
+      id SERIAL PRIMARY KEY,
+      usuario_id INTEGER,
+      usuario_email VARCHAR(255),
+      accion VARCHAR(100) NOT NULL,
+      entidad VARCHAR(50),
+      entidad_id INTEGER,
+      datos_anteriores JSONB,
+      datos_nuevos JSONB,
+      ip VARCHAR(45),
+      fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`)
   }
   
   // Cargar datos con reintento
@@ -380,7 +476,7 @@ const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1]
   if (!token) return res.status(401).json({ error: 'Token required' })
   try {
-    req.user = jwt.verify(token, JWT_SECRET)
+    req.user = jwt.verify(token, CONFIG.JWT_SECRET)
     next()
   } catch (err) {
     res.status(401).json({ error: 'Invalid token' })
@@ -431,6 +527,72 @@ app.delete('/logs', verifyToken, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
   logsEnMemoria.length = 0
   res.json({ message: 'Logs limpiados' })
+})
+
+// ===== LOGS DE SEGURIDAD PERSISTENTES =====
+app.get('/logs/seguridad', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  const limit = parseInt(req.query.limit) || 100
+  const tipo = req.query.tipo
+  
+  let query = 'SELECT * FROM logs_seguridad ORDER BY fecha DESC LIMIT $1'
+  let params = [limit]
+  
+  if (tipo && tipo !== 'all') {
+    query = 'SELECT * FROM logs_seguridad WHERE tipo = $2 ORDER BY fecha DESC LIMIT $1'
+    params = [limit, tipo]
+  }
+  
+  const result = await dbQuery(query, params)
+  res.json(result.success ? result.rows : [])
+})
+
+// ===== AUDITORÍA =====
+app.get('/auditoria', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  const limit = parseInt(req.query.limit) || 100
+  const entidad = req.query.entidad
+  const usuario = req.query.usuario
+  
+  let query = 'SELECT * FROM auditoria ORDER BY fecha DESC LIMIT $1'
+  let params = [limit]
+  
+  if (entidad) {
+    query = 'SELECT * FROM auditoria WHERE entidad = $2 ORDER BY fecha DESC LIMIT $1'
+    params = [limit, entidad]
+  } else if (usuario) {
+    query = 'SELECT * FROM auditoria WHERE usuario_email ILIKE $2 ORDER BY fecha DESC LIMIT $1'
+    params = [limit, `%${usuario}%`]
+  }
+  
+  const result = await dbQuery(query, params)
+  res.json(result.success ? result.rows : [])
+})
+
+// Estadísticas de seguridad
+app.get('/logs/seguridad/stats', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  const result = await dbQuery(`
+    SELECT 
+      tipo,
+      COUNT(*) as cantidad,
+      MAX(fecha) as ultimo
+    FROM logs_seguridad 
+    WHERE fecha > NOW() - INTERVAL '7 days'
+    GROUP BY tipo
+    ORDER BY cantidad DESC
+  `)
+  
+  const totalResult = await dbQuery(`SELECT COUNT(*) as total FROM logs_seguridad`)
+  
+  res.json({
+    por_tipo: result.success ? result.rows : [],
+    total: totalResult.success && totalResult.rows[0] ? parseInt(totalResult.rows[0].total) : 0,
+    periodo: '7 días'
+  })
 })
 
 // ===== CONFIG PÚBLICO (ULTRA RÁPIDO) =====
@@ -486,7 +648,8 @@ app.post('/auth/login', loginLimiter, (req, res) => {
   
   if (!usuario || !bcrypt.compareSync(password, usuario.password)) {
     recordFailedLogin(cleanEmail)
-    registrarLog('warning', 'Login fallido', { email: cleanEmail, ip: req.ip })
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress
+    registrarLog('warning', 'Login fallido', { email: cleanEmail }, cleanEmail, clientIp)
     return res.status(401).json({ error: 'Credenciales inválidas' })
   }
   
@@ -498,7 +661,7 @@ app.post('/auth/login', loginLimiter, (req, res) => {
   
   const token = jwt.sign(
     { id: usuario.id, email: usuario.email, role: usuario.role, nombre: usuario.nombre, permisos },
-    JWT_SECRET,
+    CONFIG.JWT_SECRET,
     { expiresIn: '24h' }
   )
   
@@ -977,7 +1140,9 @@ app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   
   if (result.success && result.rows.length > 0) {
     CACHE.usuarios.push({ ...result.rows[0], password: hashedPassword })
-    registrarLog('success', 'Usuario creado', { email }, req.user.email)
+    registrarLog('success', 'Usuario creado', { email: cleanEmail }, req.user.email)
+    // Auditoría
+    registrarAuditoria(req, 'CREAR_USUARIO', 'usuarios', result.rows[0].id, null, { email: cleanEmail, nombre: cleanNombre, role })
     res.status(201).json(result.rows[0])
   } else {
     console.error('Error creando usuario:', result.error)
@@ -990,6 +1155,10 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
   
   const userId = parseInt(req.params.id)
   const { email, nombre, role, password } = req.body
+  
+  // Guardar datos anteriores para auditoría
+  const usuarioAnterior = CACHE.usuarios.find(u => u.id === userId)
+  const datosAnteriores = usuarioAnterior ? { email: usuarioAnterior.email, nombre: usuarioAnterior.nombre, role: usuarioAnterior.role } : null
   
   let query, params
   if (password) {
@@ -1010,6 +1179,8 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
       if (password) CACHE.usuarios[idx].password = bcrypt.hashSync(password, 10)
     }
     registrarLog('info', 'Usuario actualizado', { id: userId }, req.user.email)
+    // Auditoría
+    registrarAuditoria(req, 'EDITAR_USUARIO', 'usuarios', userId, datosAnteriores, { email, nombre, role, passwordChanged: !!password })
     res.json(result.rows[0])
   } else {
     res.status(404).json({ error: 'No encontrado' })
@@ -1052,6 +1223,8 @@ app.put('/usuarios/:id/toggle-activo', verifyToken, async (req, res) => {
     }
     
     registrarLog('info', nuevoEstado ? 'Usuario activado' : 'Usuario desactivado', { id: userId, email: user.email }, req.user.email)
+    // Auditoría
+    registrarAuditoria(req, nuevoEstado ? 'ACTIVAR_USUARIO' : 'DESACTIVAR_USUARIO', 'usuarios', userId, { activo: user.activo }, { activo: nuevoEstado })
     res.json(result.rows[0])
   } else {
     res.status(500).json({ error: 'Error al actualizar' })
@@ -1283,6 +1456,8 @@ app.put('/configuracion/empresa', verifyToken, async (req, res) => {
   saveConfigAsync()
   
   registrarLog('info', 'Config empresa actualizada', { nombre }, req.user.email)
+  // Auditoría
+  registrarAuditoria(req, 'CAMBIAR_CONFIG_EMPRESA', 'configuracion', null, null, { nombre, color_primario, color_secundario })
   res.json(CACHE.configuracion.empresa)
 })
 
@@ -1298,6 +1473,8 @@ app.put('/configuracion/bienvenida', verifyToken, (req, res) => {
   saveConfigAsync()
   
   registrarLog('info', 'Config bienvenida actualizada', {}, req.user.email)
+  // Auditoría
+  registrarAuditoria(req, 'CAMBIAR_CONFIG_BIENVENIDA', 'configuracion', null, null, { titulo, subtitulo })
   res.json(CACHE.configuracion.bienvenida)
 })
 
@@ -1335,6 +1512,9 @@ app.put('/configuracion/smtp', verifyToken, async (req, res) => {
   } else {
     registrarLog('warning', 'Config SMTP en caché (BD lenta)', { host, error: result.error }, req.user.email)
   }
+  
+  // Auditoría (sin contraseña)
+  registrarAuditoria(req, 'CAMBIAR_CONFIG_SMTP', 'configuracion', null, null, { host, puerto, usuario })
   
   res.json({ ...CACHE.configuracion.smtp, saved: result.success })
 })
