@@ -5,11 +5,134 @@ const jwt = require('jsonwebtoken')
 const bcrypt = require('bcryptjs')
 const fetch = require('node-fetch')
 const AbortController = require('abort-controller')
+const helmet = require('helmet')
+const rateLimit = require('express-rate-limit')
+const validator = require('validator')
 
 const app = express()
 
-app.use(cors())
-app.use(bodyParser.json({ limit: '10mb' }))
+// ===== CONFIGURACIÓN DE SEGURIDAD =====
+
+// Helmet: Headers de seguridad HTTP
+app.use(helmet({
+  contentSecurityPolicy: false, // Desactivar CSP para permitir frontend
+  crossOriginEmbedderPolicy: false
+}))
+
+// CORS: Restringir orígenes permitidos
+const allowedOrigins = [
+  'https://horas.gruplomi.com',
+  'https://apphoras.gruplomi.com',
+  'http://localhost:5173',
+  'http://localhost:3000'
+]
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Permitir requests sin origin (apps móviles, Postman)
+    if (!origin) return callback(null, true)
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+    console.warn(`⚠️ CORS bloqueado para origen: ${origin}`)
+    return callback(new Error('No permitido por CORS'), false)
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}))
+
+// Rate Limiting: General (100 requests por minuto por IP)
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 100,
+  message: { error: 'Demasiadas peticiones, intenta de nuevo en un minuto' },
+  standardHeaders: true,
+  legacyHeaders: false
+})
+app.use(generalLimiter)
+
+// Rate Limiting: Login estricto (5 intentos por 15 minutos por IP)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 5,
+  message: { error: 'Demasiados intentos de login. Espera 15 minutos.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true // No contar logins exitosos
+})
+
+// Rate Limiting: Creación de usuarios (10 por hora)
+const createUserLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hora
+  max: 10,
+  message: { error: 'Límite de creación de usuarios alcanzado' }
+})
+
+// Bloqueo temporal por intentos fallidos (por email)
+const loginAttempts = new Map()
+const MAX_LOGIN_ATTEMPTS = 5
+const LOCKOUT_TIME = 15 * 60 * 1000 // 15 minutos
+
+function checkLoginAttempts(email) {
+  const attempts = loginAttempts.get(email)
+  if (!attempts) return { blocked: false }
+  
+  if (attempts.count >= MAX_LOGIN_ATTEMPTS) {
+    const timeLeft = LOCKOUT_TIME - (Date.now() - attempts.lastAttempt)
+    if (timeLeft > 0) {
+      return { blocked: true, timeLeft: Math.ceil(timeLeft / 1000 / 60) }
+    }
+    // Tiempo expirado, resetear
+    loginAttempts.delete(email)
+  }
+  return { blocked: false }
+}
+
+function recordFailedLogin(email) {
+  const attempts = loginAttempts.get(email) || { count: 0 }
+  attempts.count++
+  attempts.lastAttempt = Date.now()
+  loginAttempts.set(email, attempts)
+}
+
+function clearLoginAttempts(email) {
+  loginAttempts.delete(email)
+}
+
+// Limpiar intentos antiguos cada hora
+setInterval(() => {
+  const now = Date.now()
+  for (const [email, attempts] of loginAttempts.entries()) {
+    if (now - attempts.lastAttempt > LOCKOUT_TIME) {
+      loginAttempts.delete(email)
+    }
+  }
+}, 60 * 60 * 1000)
+
+// Body parser con límite
+app.use(bodyParser.json({ limit: '5mb' })) // Reducido de 10mb a 5mb
+
+// ===== FUNCIONES DE VALIDACIÓN =====
+function sanitizeEmail(email) {
+  if (!email || typeof email !== 'string') return null
+  const clean = email.toLowerCase().trim()
+  return validator.isEmail(clean) ? clean : null
+}
+
+function sanitizeString(str, maxLength = 255) {
+  if (!str || typeof str !== 'string') return ''
+  return validator.escape(str.trim().substring(0, maxLength))
+}
+
+function validatePassword(password) {
+  if (!password || typeof password !== 'string') return false
+  // Mínimo 8 caracteres, al menos 1 mayúscula, 1 minúscula, 1 número
+  return password.length >= 8 && 
+         /[A-Z]/.test(password) && 
+         /[a-z]/.test(password) && 
+         /[0-9]/.test(password)
+}
 
 const PROXY_URL = process.env.PROXY_URL || 'http://185.194.59.40:3001'
 const PROXY_API_KEY = process.env.PROXY_API_KEY || 'GrupLomi2024ProxySecureKey_XyZ789'
@@ -341,14 +464,34 @@ function getPermisosForRole(roleName) {
   return []
 }
 
-app.post('/auth/login', (req, res) => {
+app.post('/auth/login', loginLimiter, (req, res) => {
   const { email, password } = req.body
-  const usuario = CACHE.usuarios.find(u => u.email === email)
+  
+  // Validar y sanitizar email
+  const cleanEmail = sanitizeEmail(email)
+  if (!cleanEmail) {
+    return res.status(400).json({ error: 'Email inválido' })
+  }
+  
+  // Verificar bloqueo por intentos fallidos
+  const lockCheck = checkLoginAttempts(cleanEmail)
+  if (lockCheck.blocked) {
+    registrarLog('warning', 'Login bloqueado por intentos', { email: cleanEmail })
+    return res.status(429).json({ 
+      error: `Cuenta bloqueada temporalmente. Intenta en ${lockCheck.timeLeft} minutos.` 
+    })
+  }
+  
+  const usuario = CACHE.usuarios.find(u => u.email === cleanEmail)
   
   if (!usuario || !bcrypt.compareSync(password, usuario.password)) {
-    registrarLog('warning', 'Login fallido', { email })
+    recordFailedLogin(cleanEmail)
+    registrarLog('warning', 'Login fallido', { email: cleanEmail, ip: req.ip })
     return res.status(401).json({ error: 'Credenciales inválidas' })
   }
+  
+  // Login exitoso - limpiar intentos fallidos
+  clearLoginAttempts(cleanEmail)
   
   // Obtener permisos del rol
   const permisos = getPermisosForRole(usuario.role)
@@ -792,25 +935,42 @@ app.get('/usuarios', verifyToken, (req, res) => {
   res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false })))
 })
 
-app.post('/usuarios', verifyToken, async (req, res) => {
+app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const { email, nombre, role, password } = req.body
-  if (!email || !nombre || !role) return res.status(400).json({ error: 'Campos requeridos' })
+  
+  // Validar email
+  const cleanEmail = sanitizeEmail(email)
+  if (!cleanEmail) {
+    return res.status(400).json({ error: 'Email inválido' })
+  }
+  
+  // Sanitizar nombre
+  const cleanNombre = sanitizeString(nombre, 100)
+  if (!cleanNombre) {
+    return res.status(400).json({ error: 'Nombre requerido' })
+  }
+  
+  // Validar role
+  const validRoles = ['admin', 'supervisor', 'operario']
+  if (!role || !validRoles.includes(role)) {
+    return res.status(400).json({ error: 'Role inválido' })
+  }
   
   // Verificar si el email ya existe
-  const existingUser = CACHE.usuarios.find(u => u.email.toLowerCase() === email.toLowerCase())
+  const existingUser = CACHE.usuarios.find(u => u.email.toLowerCase() === cleanEmail)
   if (existingUser) {
     return res.status(400).json({ error: 'El email ya está registrado' })
   }
   
   const hashedPassword = bcrypt.hashSync(password || 'TempPassword2025!', 10)
   
-  console.log('Creando usuario:', { email, nombre, role })
+  console.log('Creando usuario:', { email: cleanEmail, nombre: cleanNombre, role })
   
   const result = await dbQuery(
     'INSERT INTO usuarios_horas (email, nombre, role, password) VALUES ($1, $2, $3, $4) RETURNING id, email, nombre, role, activo',
-    [email, nombre, role, hashedPassword]
+    [cleanEmail, cleanNombre, role, hashedPassword]
   )
   
   console.log('Resultado INSERT usuario:', result)
