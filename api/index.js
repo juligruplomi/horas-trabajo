@@ -324,6 +324,8 @@ async function initializeCache() {
     await dbQuery(`CREATE TABLE IF NOT EXISTS avisos_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, numero_gomanage VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`ALTER TABLE obras_trabajo ADD COLUMN IF NOT EXISTS numero_gomanage VARCHAR(50)`)
+    // Añadir columna para saber quién registró las horas (si fue un supervisor)
+    await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS registrado_por INTEGER`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (id SERIAL PRIMARY KEY, descripcion TEXT NOT NULL, cliente VARCHAR(255) NOT NULL, tipo_alerta VARCHAR(20), primera_alerta DATE, proxima_alerta DATE, estado VARCHAR(20) DEFAULT 'activo', alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`)
     // Tabla de logs de seguridad persistentes
@@ -754,15 +756,43 @@ app.get('/horas', verifyToken, async (req, res) => {
 })
 
 app.post('/horas', verifyToken, async (req, res) => {
-  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion } = req.body
+  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, usuario_id } = req.body
   
   if (!fecha || !tipo_trabajo || !numero_aviso || cant_horas === undefined) {
     return res.status(400).json({ error: 'Campos requeridos' })
   }
   
+  // Determinar para qué usuario se registran las horas
+  let targetUserId = req.user.id
+  let registradoPor = null
+  
+  // Si se especifica otro usuario, verificar permisos
+  if (usuario_id && usuario_id !== req.user.id) {
+    // Solo admin y supervisor pueden registrar horas para otros
+    if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
+      return res.status(403).json({ error: 'No autorizado para registrar horas de otros usuarios' })
+    }
+    
+    // Verificar que el usuario objetivo existe
+    const userExists = CACHE.usuarios.find(u => u.id === usuario_id)
+    if (!userExists) {
+      return res.status(404).json({ error: 'Usuario no encontrado' })
+    }
+    
+    targetUserId = usuario_id
+    registradoPor = req.user.id // Guardar quién registró las horas
+    
+    registrarLog('info', `Horas registradas para otro usuario`, { 
+      registrador: req.user.email, 
+      para_usuario: userExists.email,
+      fecha,
+      horas: cant_horas
+    }, req.user.email)
+  }
+  
   const result = await dbQuery(
-    'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-    [req.user.id, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '']
+    'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, registrado_por) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+    [targetUserId, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '', registradoPor]
   )
   
   if (result.success && result.rows.length > 0) {
