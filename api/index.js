@@ -756,13 +756,64 @@ app.get('/horas', verifyToken, async (req, res) => {
 })
 
 app.post('/horas', verifyToken, async (req, res) => {
-  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, usuario_id } = req.body
+  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, usuario_id, usuario_ids } = req.body
   
   if (!fecha || !tipo_trabajo || !numero_aviso || cant_horas === undefined) {
     return res.status(400).json({ error: 'Campos requeridos' })
   }
   
-  // Determinar para qué usuario se registran las horas
+  // MODO MASIVO: Registrar horas para múltiples usuarios
+  if (usuario_ids && Array.isArray(usuario_ids) && usuario_ids.length > 0) {
+    // Solo admin y supervisor pueden registrar horas para otros
+    if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
+      return res.status(403).json({ error: 'No autorizado para registrar horas de otros usuarios' })
+    }
+    
+    // Verificar que todos los usuarios existen
+    const usuariosValidos = usuario_ids.filter(id => CACHE.usuarios.find(u => u.id === parseInt(id)))
+    if (usuariosValidos.length === 0) {
+      return res.status(404).json({ error: 'Ninguno de los usuarios especificados existe' })
+    }
+    
+    const resultados = []
+    const errores = []
+    
+    for (const uid of usuariosValidos) {
+      const targetUserId = parseInt(uid)
+      const result = await dbQuery(
+        'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, registrado_por) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+        [targetUserId, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '', req.user.id]
+      )
+      
+      if (result.success && result.rows.length > 0) {
+        CACHE.horas.unshift(result.rows[0])
+        resultados.push(result.rows[0])
+      } else {
+        errores.push({ usuario_id: targetUserId, error: result.error })
+      }
+    }
+    
+    const nombresUsuarios = usuariosValidos.map(id => {
+      const u = CACHE.usuarios.find(u => u.id === parseInt(id))
+      return u?.nombre || id
+    }).join(', ')
+    
+    registrarLog('info', `Horas masivas registradas para ${resultados.length} usuarios`, { 
+      registrador: req.user.email, 
+      usuarios: nombresUsuarios,
+      fecha,
+      horas: cant_horas,
+      total_registros: resultados.length
+    }, req.user.email)
+    
+    return res.status(201).json({
+      mensaje: `Horas registradas para ${resultados.length} usuario(s)`,
+      registros: resultados,
+      errores: errores.length > 0 ? errores : undefined
+    })
+  }
+  
+  // MODO INDIVIDUAL: Registrar horas para un solo usuario
   let targetUserId = req.user.id
   let registradoPor = null
   
