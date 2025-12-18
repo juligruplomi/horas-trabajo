@@ -89,8 +89,8 @@ const loginLimiter = rateLimit({
 // Rate Limiting: Creación de usuarios (10 por hora)
 const createUserLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
-  max: 10,
-  message: { error: 'Límite de creación de usuarios alcanzado' }
+  max: 50, // Aumentado para importacion masiva
+  message: { error: 'Limite de creacion de usuarios alcanzado (max 50/hora)' }
 })
 
 // Bloqueo temporal por intentos fallidos (por email)
@@ -934,6 +934,101 @@ app.put('/horas/:id/validar', verifyToken, (req, res) => {
 })
 
 // ===== BORRADO MASIVO =====
+// ========== IMPORTAR HORAS DESDE EXCEL ==========
+app.post('/horas/importar-excel', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'supervisor') {
+    return res.status(403).json({ error: 'Solo admin o supervisor' })
+  }
+  
+  const { numero_obra, datos_excel } = req.body
+  // datos_excel = [{ codigo: '1100', nombre: 'EDSON...', dias: { '2025-08-15': 9.4, '2025-08-16': 8, ... } }, ...]
+  
+  if (!numero_obra || !datos_excel || !Array.isArray(datos_excel)) {
+    return res.status(400).json({ error: 'Datos inválidos. Se requiere numero_obra y datos_excel' })
+  }
+  
+  // Verificar que la obra existe
+  const obraExiste = CACHE.obras?.find(o => o.numero === numero_obra)
+  if (!obraExiste) {
+    return res.status(404).json({ error: `Obra "${numero_obra}" no encontrada` })
+  }
+  
+  const resultados = {
+    importados: 0,
+    errores: [],
+    usuarios_no_encontrados: [],
+    detalles: []
+  }
+  
+  for (const trabajador of datos_excel) {
+    const { codigo, nombre, dias } = trabajador
+    
+    if (!codigo || !dias) continue
+    
+    // Buscar usuario por código_trabajador
+    const usuario = CACHE.usuarios.find(u => u.codigo_trabajador === codigo)
+    
+    if (!usuario) {
+      if (!resultados.usuarios_no_encontrados.find(u => u.codigo === codigo)) {
+        resultados.usuarios_no_encontrados.push({ codigo, nombre })
+      }
+      continue
+    }
+    
+    // Insertar horas para cada día
+    for (const [fecha, horas] of Object.entries(dias)) {
+      if (!horas || horas <= 0) continue
+      
+      try {
+        // Verificar si ya existe un registro para este usuario/fecha/obra
+        const existeQuery = await dbQuery(
+          'SELECT id FROM horas_trabajo WHERE usuario_id = $1 AND fecha = $2 AND numero_aviso = $3',
+          [usuario.id, fecha, numero_obra]
+        )
+        
+        if (existeQuery.success && existeQuery.rows.length > 0) {
+          // Actualizar registro existente
+          await dbQuery(
+            'UPDATE horas_trabajo SET horas = $1, registrado_por = $2 WHERE id = $3',
+            [parseFloat(horas), req.user.id, existeQuery.rows[0].id]
+          )
+        } else {
+          // Crear nuevo registro
+          const result = await dbQuery(
+            'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, estado, registrado_por) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [usuario.id, fecha, 'Obra', numero_obra, parseFloat(horas), `Importado desde Excel - ${obraExiste.cliente || ''}`, 'pendiente', req.user.id]
+          )
+          
+          if (result.success && result.rows.length > 0) {
+            CACHE.horas.unshift(result.rows[0])
+          }
+        }
+        
+        resultados.importados++
+        resultados.detalles.push({ usuario: usuario.nombre, fecha, horas })
+        
+      } catch (err) {
+        resultados.errores.push({ usuario: usuario.nombre, fecha, error: err.message })
+      }
+    }
+  }
+  
+  registrarLog('info', `Importación Excel: ${resultados.importados} registros para obra ${numero_obra}`, {
+    obra: numero_obra,
+    importados: resultados.importados,
+    usuarios_no_encontrados: resultados.usuarios_no_encontrados.length,
+    errores: resultados.errores.length
+  }, req.user.email)
+  
+  // Refrescar caché de horas
+  refreshCache('horas')
+  
+  res.json({
+    mensaje: `Importación completada: ${resultados.importados} registros de horas`,
+    ...resultados
+  })
+})
+
 app.post('/horas/borrar-masivo', verifyToken, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' })
   
