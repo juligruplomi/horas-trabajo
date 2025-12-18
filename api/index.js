@@ -89,8 +89,8 @@ const loginLimiter = rateLimit({
 // Rate Limiting: Creación de usuarios (10 por hora)
 const createUserLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
-  max: 50, // Aumentado para importacion masiva
-  message: { error: 'Limite de creacion de usuarios alcanzado (max 50/hora)' }
+  max: 100, // Aumentado para importacion masiva
+  message: { error: 'Limite de creacion de usuarios alcanzado (max 100/hora)' }
 })
 
 // Bloqueo temporal por intentos fallidos (por email)
