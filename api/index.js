@@ -1279,6 +1279,73 @@ app.get('/usuarios', verifyToken, (req, res) => {
   res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false })))
 })
 
+
+// ===== IMPORTACIÓN MASIVA DE USUARIOS (sin rate limiting) =====
+app.post('/usuarios/importar-masivo', verifyToken, async (req, res) => {
+  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
+  
+  const { usuarios } = req.body
+  if (!usuarios || !Array.isArray(usuarios)) {
+    return res.status(400).json({ error: 'Se requiere un array de usuarios' })
+  }
+  
+  const resultados = { creados: 0, actualizados: 0, errores: [] }
+  
+  for (const u of usuarios) {
+    try {
+      const cleanNombre = sanitizeString(u.nombre, 100)
+      if (!cleanNombre) {
+        resultados.errores.push({ nombre: u.nombre || 'Sin nombre', error: 'Nombre requerido' })
+        continue
+      }
+      
+      const cleanEmail = u.email ? sanitizeEmail(u.email) : null
+      const cleanCodigo = u.codigo_trabajador ? sanitizeString(u.codigo_trabajador, 20) : null
+      const role = ['admin', 'supervisor', 'operario'].includes(u.role) ? u.role : 'operario'
+      
+      // Buscar si ya existe por codigo_trabajador o email
+      let usuarioExistente = null
+      if (cleanCodigo) {
+        usuarioExistente = CACHE.usuarios.find(ex => ex.codigo_trabajador === cleanCodigo)
+      }
+      if (!usuarioExistente && cleanEmail) {
+        usuarioExistente = CACHE.usuarios.find(ex => ex.email.toLowerCase() === cleanEmail.toLowerCase())
+      }
+      
+      if (usuarioExistente) {
+        // Actualizar codigo_trabajador del usuario existente
+        if (cleanCodigo && cleanCodigo !== usuarioExistente.codigo_trabajador) {
+          await dbQuery('UPDATE usuarios_horas SET codigo_trabajador = $1 WHERE id = $2', [cleanCodigo, usuarioExistente.id])
+          usuarioExistente.codigo_trabajador = cleanCodigo
+          resultados.actualizados++
+        } else {
+          resultados.errores.push({ nombre: cleanNombre, error: 'Ya existe' })
+        }
+      } else {
+        // Crear nuevo usuario
+        const emailFinal = cleanEmail || 'temp_' + (cleanCodigo || Date.now()) + '@pendiente.local'
+        const hashedPassword = bcrypt.hashSync('TempPassword2025!', 10)
+        
+        const result = await dbQuery(
+          'INSERT INTO usuarios_horas (email, nombre, role, password, codigo_trabajador) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, nombre, role, activo, codigo_trabajador',
+          [emailFinal, cleanNombre, role, hashedPassword, cleanCodigo]
+        )
+        
+        if (result.success && result.rows.length > 0) {
+          CACHE.usuarios.push(result.rows[0])
+          resultados.creados++
+        } else {
+          resultados.errores.push({ nombre: cleanNombre, error: result.error || 'Error al crear' })
+        }
+      }
+    } catch (err) {
+      resultados.errores.push({ nombre: u.nombre || 'Desconocido', error: err.message })
+    }
+  }
+  
+  res.json(resultados)
+})
+
 app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
