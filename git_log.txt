@@ -1,0 +1,3 @@
+c83ad39 Fix: endpoint usuarios devuelve codigo_trabajador, permiso supervisar_horas
+305b5a1 Add: Endpoint importacion masiva usuarios
+ff7b655 Add: Endpoint importacion masiva de usuarios sin rate limiting
