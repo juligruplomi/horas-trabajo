@@ -1485,16 +1485,16 @@ app.put('/usuarios/:id/toggle-activo', verifyToken, async (req, res) => {
   }
 })
 
-// Obtener todos los usuarios (incluyendo inactivos) para gestión
+// Obtener todos los usuarios (incluyendo inactivos) para gestion
 app.get('/usuarios/todos', verifyToken, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
-  const result = await dbQuery('SELECT id, email, nombre, role, activo FROM usuarios_horas ORDER BY activo DESC, nombre')
+  const result = await dbQuery('SELECT id, email, nombre, role, activo, codigo_trabajador FROM usuarios_horas ORDER BY activo DESC, nombre')
   if (result.success) {
     res.json(result.rows)
   } else {
-    // Fallback al caché
-    res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false })))
+    // Fallback al cache
+    res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false, codigo_trabajador: u.codigo_trabajador || null })))
   }
 })
 
