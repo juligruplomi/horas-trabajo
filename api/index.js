@@ -1274,13 +1274,16 @@ app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
 })
 
 // ===== USUARIOS (DESDE CACHÃ‰) =====
+// Permiso: supervisar_horas o gestionar_usuarios (para que supervisores puedan ver lista de operarios)
 app.get('/usuarios', verifyToken, (req, res) => {
-  if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
-  res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false })))
+  if (!hasPermiso(req.user, 'gestionar_usuarios') && !hasPermiso(req.user, 'supervisar_horas')) {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false, codigo_trabajador: u.codigo_trabajador || null })))
 })
 
 
-// ===== IMPORTACIÓN MASIVA DE USUARIOS (sin rate limiting) =====
+// ===== IMPORTACIï¿½N MASIVA DE USUARIOS (sin rate limiting) =====
 app.post('/usuarios/importar-masivo', verifyToken, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
