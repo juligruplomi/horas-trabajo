@@ -2310,6 +2310,102 @@ app.get('/exportar/gomanage/preview', verifyToken, verifyAdmin, async (req, res)
   }
 })
 
+// ========== SUPERVISIONES ==========
+// Tabla: supervisiones_asignadas (supervisor_id, operario_id)
+
+// Obtener operarios asignados al supervisor actual
+app.get('/supervisiones', verifyToken, async (req, res) => {
+  if (req.user.role !== 'supervisor' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  try {
+    // Crear tabla si no existe
+    await dbQuery(`
+      CREATE TABLE IF NOT EXISTS supervisiones_asignadas (
+        id SERIAL PRIMARY KEY,
+        supervisor_id INTEGER NOT NULL,
+        operario_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(supervisor_id, operario_id)
+      )
+    `)
+    
+    const result = await dbQuery(
+      'SELECT operario_id FROM supervisiones_asignadas WHERE supervisor_id = $1',
+      [req.user.id]
+    )
+    
+    res.json(result.success ? result.rows.map(r => r.operario_id) : [])
+  } catch (err) {
+    console.error('Error fetching supervisiones:', err)
+    res.status(500).json({ error: 'Error al obtener supervisiones' })
+  }
+})
+
+// Guardar operarios asignados al supervisor
+app.post('/supervisiones', verifyToken, async (req, res) => {
+  if (req.user.role !== 'supervisor' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  const { operario_ids } = req.body
+  
+  if (!Array.isArray(operario_ids)) {
+    return res.status(400).json({ error: 'operario_ids debe ser un array' })
+  }
+  
+  try {
+    // Crear tabla si no existe
+    await dbQuery(`
+      CREATE TABLE IF NOT EXISTS supervisiones_asignadas (
+        id SERIAL PRIMARY KEY,
+        supervisor_id INTEGER NOT NULL,
+        operario_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(supervisor_id, operario_id)
+      )
+    `)
+    
+    // Eliminar asignaciones anteriores
+    await dbQuery(
+      'DELETE FROM supervisiones_asignadas WHERE supervisor_id = $1',
+      [req.user.id]
+    )
+    
+    // Insertar nuevas asignaciones
+    for (const operarioId of operario_ids) {
+      await dbQuery(
+        'INSERT INTO supervisiones_asignadas (supervisor_id, operario_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [req.user.id, operarioId]
+      )
+    }
+    
+    res.json({ success: true, message: `${operario_ids.length} operarios asignados` })
+  } catch (err) {
+    console.error('Error saving supervisiones:', err)
+    res.status(500).json({ error: 'Error al guardar supervisiones' })
+  }
+})
+
+// Obtener todos los operarios (para el selector)
+app.get('/supervisiones/operarios', verifyToken, async (req, res) => {
+  if (req.user.role !== 'supervisor' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  
+  try {
+    const result = await dbQuery(
+      "SELECT id, nombre, email, codigo_trabajador FROM usuarios_horas WHERE role = 'operario' AND activo = true ORDER BY nombre"
+    )
+    
+    res.json(result.success ? result.rows : [])
+  } catch (err) {
+    console.error('Error fetching operarios:', err)
+    res.status(500).json({ error: 'Error al obtener operarios' })
+  }
+})
+
 const PORT = process.env.PORT || 8000
 app.listen(PORT, () => console.log(`🚀 Backend v5.0 on port ${PORT}`))
 
