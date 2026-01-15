@@ -76,14 +76,19 @@ const generalLimiter = rateLimit({
 })
 app.use(generalLimiter)
 
-// Rate Limiting: Login estricto (5 intentos por 15 minutos por IP)
+// Rate Limiting: Login por IP (protección contra ataques masivos)
+// El bloqueo específico por usuario se hace con loginAttempts (por email)
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 5,
-  message: { error: 'Demasiados intentos de login. Espera 15 minutos.' },
+  windowMs: 1 * 60 * 1000, // 1 minuto
+  max: 30, // 30 intentos por minuto por IP (permisivo, el bloqueo real es por email)
+  message: { error: 'Demasiadas peticiones desde esta IP. Espera un momento.' },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: true // No contar logins exitosos
+  skipSuccessfulRequests: true,
+  // Usar IP real del cliente (requiere trust proxy)
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for']?.split(',')[0] || req.connection?.remoteAddress || 'unknown'
+  }
 })
 
 // Rate Limiting: Creación de usuarios (10 por hora)
@@ -136,6 +141,9 @@ setInterval(() => {
 
 // Body parser con límite
 app.use(bodyParser.json({ limit: '5mb' })) // Reducido de 10mb a 5mb
+
+// Trust proxy para obtener IP real del cliente (importante para Vercel/proxies)
+app.set('trust proxy', true)
 
 // Forzar HTTPS en producción
 if (CONFIG.NODE_ENV === 'production') {
