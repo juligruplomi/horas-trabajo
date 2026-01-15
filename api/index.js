@@ -139,6 +139,31 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000)
 
+// Endpoint para desbloquear usuario (solo admin)
+function unlockUser(email) {
+  loginAttempts.delete(email?.toLowerCase())
+  return true
+}
+
+// Endpoint para ver usuarios bloqueados (solo admin)
+function getBlockedUsers() {
+  const blocked = []
+  const now = Date.now()
+  for (const [email, attempts] of loginAttempts.entries()) {
+    if (attempts.count >= MAX_LOGIN_ATTEMPTS) {
+      const timeLeft = LOCKOUT_TIME - (now - attempts.lastAttempt)
+      if (timeLeft > 0) {
+        blocked.push({
+          email,
+          attempts: attempts.count,
+          timeLeftMinutes: Math.ceil(timeLeft / 1000 / 60)
+        })
+      }
+    }
+  }
+  return blocked
+}
+
 // Body parser con límite
 app.use(bodyParser.json({ limit: '5mb' })) // Reducido de 10mb a 5mb
 
@@ -1978,12 +2003,12 @@ app.post('/ticket/enviar', verifyToken, async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '5.0',
+    version: '5.1',
     security: {
       helmet: true,
       cors_restricted: true,
       rate_limiting: true,
-      login_blocking: true,
+      login_blocking: 'per_email',
       input_validation: true,
       https_redirect: CONFIG.NODE_ENV === 'production',
       audit_logging: true,
@@ -1999,6 +2024,45 @@ app.get('/health', (req, res) => {
       smtp_configured: !!(CACHE.configuracion?.smtp?.host && CACHE.configuracion?.smtp?.usuario)
     }
   })
+})
+
+// ===== GESTIÓN DE BLOQUEOS =====
+// Ver usuarios bloqueados
+app.get('/auth/blocked', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  res.json(getBlockedUsers())
+})
+
+// Desbloquear usuario específico
+app.post('/auth/unblock', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  const { email } = req.body
+  if (!email) return res.status(400).json({ error: 'Email requerido' })
+  unlockUser(email)
+  registrarLog('info', 'Usuario desbloqueado manualmente', { email }, req.user.email)
+  res.json({ success: true, message: `Usuario ${email} desbloqueado` })
+})
+
+// Desbloquear TODOS los usuarios (emergencia)
+app.post('/auth/unblock-all', verifyToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  const count = loginAttempts.size
+  loginAttempts.clear()
+  registrarLog('warning', 'Todos los bloqueos eliminados', { count }, req.user.email)
+  res.json({ success: true, message: `${count} bloqueos eliminados` })
+})
+
+// Endpoint público para desbloquear (con clave secreta) - EMERGENCIA
+app.get('/auth/emergency-unblock', (req, res) => {
+  const { key } = req.query
+  // Clave de emergencia (cambiar en producción)
+  if (key !== 'GrupLomi2025EmergencyUnlock') {
+    return res.status(403).json({ error: 'Clave inválida' })
+  }
+  const count = loginAttempts.size
+  loginAttempts.clear()
+  registrarLog('warning', 'Desbloqueo de emergencia ejecutado', { count })
+  res.json({ success: true, message: `${count} bloqueos eliminados. Ya puedes iniciar sesión.` })
 })
 
 // Forzar recarga de caché desde BD
