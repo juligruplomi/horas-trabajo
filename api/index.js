@@ -211,6 +211,7 @@ const CACHE = {
   avisos: [],
   obras: [],
   mantenimientos: [],
+  empresas: [],
   lastSync: {},
   initialized: false
 }
@@ -357,6 +358,10 @@ async function initializeCache() {
     await dbQuery(`CREATE TABLE IF NOT EXISTS avisos_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS obras_trabajo (id SERIAL PRIMARY KEY, numero VARCHAR(50) UNIQUE NOT NULL, cliente VARCHAR(255) NOT NULL, descripcion TEXT, estado VARCHAR(20) DEFAULT 'en_curso', fecha DATE, fecha_fin_estimada DATE, alertas_email TEXT, numero_gomanage VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`ALTER TABLE obras_trabajo ADD COLUMN IF NOT EXISTS numero_gomanage VARCHAR(50)`)
+    // Añadir columna activitat a avisos, obras y mantenimientos
+    await dbQuery(`ALTER TABLE avisos_trabajo ADD COLUMN IF NOT EXISTS activitat VARCHAR(50)`)
+    await dbQuery(`ALTER TABLE obras_trabajo ADD COLUMN IF NOT EXISTS activitat VARCHAR(50)`)
+    await dbQuery(`ALTER TABLE mantenimientos_trabajo ADD COLUMN IF NOT EXISTS activitat VARCHAR(50)`)
     // Añadir columna para saber quién registró las horas (si fue un supervisor)
     await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS registrado_por INTEGER`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (id SERIAL PRIMARY KEY, descripcion TEXT NOT NULL, cliente VARCHAR(255) NOT NULL, tipo_alerta VARCHAR(20), primera_alerta DATE, proxima_alerta DATE, estado VARCHAR(20) DEFAULT 'activo', alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
@@ -372,6 +377,17 @@ async function initializeCache() {
       fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`)
     // Tabla de auditoría de acciones sensibles
+    // Tabla de empresas
+    await dbQuery(`CREATE TABLE IF NOT EXISTS empresas_trabajo (
+      id SERIAL PRIMARY KEY,
+      codigo VARCHAR(10) UNIQUE NOT NULL,
+      nombre VARCHAR(255) NOT NULL,
+      logo TEXT,
+      activo BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`)
+    // Añadir columna empresa_id a usuarios si no existe
+    await dbQuery(`ALTER TABLE usuarios_horas ADD COLUMN IF NOT EXISTS empresa_id INTEGER`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS auditoria (
       id SERIAL PRIMARY KEY,
       usuario_id INTEGER,
@@ -391,14 +407,15 @@ async function initializeCache() {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       console.log(`📡 Intento ${attempt}/${maxRetries} de carga desde BD...`)
       
-      const [configRes, usersRes, rolesRes, horasRes, avisosRes, obrasRes, mantRes] = await Promise.all([
+      const [configRes, usersRes, rolesRes, horasRes, avisosRes, obrasRes, mantRes, empresasRes] = await Promise.all([
         dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'", [], 5000),
         dbQuery('SELECT * FROM usuarios_horas WHERE activo = true ORDER BY id', [], 5000),
         dbQuery('SELECT * FROM roles_horas ORDER BY id', [], 5000),
         dbQuery('SELECT * FROM horas_trabajo ORDER BY fecha DESC, id DESC LIMIT 1000', [], 5000),
         dbQuery('SELECT * FROM avisos_trabajo ORDER BY id DESC', [], 5000),
         dbQuery('SELECT * FROM obras_trabajo ORDER BY id DESC', [], 5000),
-        dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 5000)
+        dbQuery('SELECT * FROM mantenimientos_trabajo ORDER BY id DESC', [], 5000),
+        dbQuery('SELECT * FROM empresas_trabajo WHERE activo = true ORDER BY codigo', [], 5000)
       ])
       
       // Contar éxitos
@@ -415,9 +432,12 @@ async function initializeCache() {
             id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo,
             idioma_preferido: u.idioma_preferido || 'es',
             modo_oscuro: u.modo_oscuro || false,
-            codigo_trabajador: u.codigo_trabajador || null
+            codigo_trabajador: u.codigo_trabajador || null,
+            empresa_id: u.empresa_id || null
           }))
         }
+        
+        if (empresasRes.success) CACHE.empresas = empresasRes.rows
         
         if (rolesRes.success && rolesRes.rows.length > 0) {
           CACHE.roles = rolesRes.rows.map(r => ({
@@ -490,9 +510,14 @@ function refreshCache(type) {
               id: u.id, email: u.email, nombre: u.nombre, role: u.role, password: u.password, activo: u.activo,
               idioma_preferido: u.idioma_preferido || 'es',
               modo_oscuro: u.modo_oscuro || false,
-              codigo_trabajador: u.codigo_trabajador || null
+              codigo_trabajador: u.codigo_trabajador || null,
+              empresa_id: u.empresa_id || null
             }))
           }
+          break
+        case 'empresas':
+          const empresasRes = await dbQuery('SELECT * FROM empresas_trabajo WHERE activo = true ORDER BY codigo')
+          if (empresasRes.success) CACHE.empresas = empresasRes.rows
           break
         case 'config':
           const configRes = await dbQuery("SELECT valor FROM configuracion_horas WHERE clave = 'general'")
@@ -1147,14 +1172,14 @@ app.get('/avisos/activos', verifyToken, (req, res) => {
 })
 
 app.post('/avisos', verifyToken, verifyAdmin, async (req, res) => {
-  const { numero, cliente, descripcion, estado, fecha, alertas_email } = req.body
+  const { numero, cliente, descripcion, estado, fecha, alertas_email, activitat } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
     return res.status(400).json({ error: 'Campos requeridos' })
   }
   
   const result = await dbQuery(
-    'INSERT INTO avisos_trabajo (numero, cliente, descripcion, estado, fecha, alertas_email) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-    [numero, cliente, descripcion, estado || 'en_curso', fecha, JSON.stringify(alertas_email || [])]
+    'INSERT INTO avisos_trabajo (numero, cliente, descripcion, estado, fecha, alertas_email, activitat) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+    [numero, cliente, descripcion, estado || 'en_curso', fecha, JSON.stringify(alertas_email || []), activitat || null]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1168,11 +1193,11 @@ app.post('/avisos', verifyToken, verifyAdmin, async (req, res) => {
 
 app.put('/avisos/:id', verifyToken, verifyAdmin, async (req, res) => {
   const id = parseInt(req.params.id)
-  const { numero, cliente, descripcion, estado, fecha, alertas_email } = req.body
+  const { numero, cliente, descripcion, estado, fecha, alertas_email, activitat } = req.body
   
   const result = await dbQuery(
-    'UPDATE avisos_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, alertas_email=$6 WHERE id=$7 RETURNING *',
-    [numero, cliente, descripcion, estado, fecha, JSON.stringify(alertas_email || []), id]
+    'UPDATE avisos_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, alertas_email=$6, activitat=$7 WHERE id=$8 RETURNING *',
+    [numero, cliente, descripcion, estado, fecha, JSON.stringify(alertas_email || []), activitat || null, id]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1202,14 +1227,14 @@ app.get('/obras/activas', verifyToken, (req, res) => {
 })
 
 app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
-  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage } = req.body
+  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage, activitat } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
     return res.status(400).json({ error: 'Campos requeridos' })
   }
   
   const result = await dbQuery(
-    'INSERT INTO obras_trabajo (numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-    [numero, cliente, descripcion, estado || 'en_curso', fecha, fecha_fin_estimada || null, JSON.stringify(alertas_email || []), numero_gomanage || null]
+    'INSERT INTO obras_trabajo (numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage, activitat) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+    [numero, cliente, descripcion, estado || 'en_curso', fecha, fecha_fin_estimada || null, JSON.stringify(alertas_email || []), numero_gomanage || null, activitat || null]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1223,11 +1248,11 @@ app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
 
 app.put('/obras/:id', verifyToken, verifyAdmin, async (req, res) => {
   const id = parseInt(req.params.id)
-  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage } = req.body
+  const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage, activitat } = req.body
   
   const result = await dbQuery(
-    'UPDATE obras_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, fecha_fin_estimada=$6, alertas_email=$7, numero_gomanage=$8 WHERE id=$9 RETURNING *',
-    [numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, JSON.stringify(alertas_email || []), numero_gomanage || null, id]
+    'UPDATE obras_trabajo SET numero=$1, cliente=$2, descripcion=$3, estado=$4, fecha=$5, fecha_fin_estimada=$6, alertas_email=$7, numero_gomanage=$8, activitat=$9 WHERE id=$10 RETURNING *',
+    [numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, JSON.stringify(alertas_email || []), numero_gomanage || null, activitat || null, id]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1257,7 +1282,7 @@ app.get('/mantenimientos/activos', verifyToken, (req, res) => {
 })
 
 app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
-  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
+  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email, activitat } = req.body
   if (!descripcion || !tipo_alerta || !cliente || !primera_alerta) {
     return res.status(400).json({ error: 'Campos requeridos' })
   }
@@ -1265,8 +1290,8 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
   const proxima_alerta = calcularProximaAlerta(tipo_alerta, primera_alerta)
   
   const result = await dbQuery(
-    'INSERT INTO mantenimientos_trabajo (descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, alertas_email) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-    [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado || 'activo', JSON.stringify(alertas_email || [])]
+    'INSERT INTO mantenimientos_trabajo (descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, alertas_email, activitat) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+    [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado || 'activo', JSON.stringify(alertas_email || []), activitat || null]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1280,13 +1305,13 @@ app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
 
 app.put('/mantenimientos/:id', verifyToken, verifyAdmin, async (req, res) => {
   const id = parseInt(req.params.id)
-  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email } = req.body
+  const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email, activitat } = req.body
   
   const proxima_alerta = tipo_alerta && primera_alerta ? calcularProximaAlerta(tipo_alerta, primera_alerta) : null
   
   const result = await dbQuery(
-    'UPDATE mantenimientos_trabajo SET descripcion=$1, cliente=$2, tipo_alerta=$3, primera_alerta=$4, proxima_alerta=COALESCE($5, proxima_alerta), estado=$6, alertas_email=$7 WHERE id=$8 RETURNING *',
-    [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, JSON.stringify(alertas_email || []), id]
+    'UPDATE mantenimientos_trabajo SET descripcion=$1, cliente=$2, tipo_alerta=$3, primera_alerta=$4, proxima_alerta=COALESCE($5, proxima_alerta), estado=$6, alertas_email=$7, activitat=$8 WHERE id=$9 RETURNING *',
+    [descripcion, cliente, tipo_alerta, primera_alerta, proxima_alerta, estado, JSON.stringify(alertas_email || []), activitat || null, id]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1306,13 +1331,90 @@ app.delete('/mantenimientos/:id', verifyToken, verifyAdmin, (req, res) => {
   res.json({ message: 'Eliminado' })
 })
 
+// ===== EMPRESAS (DESDE CACHÉ) =====
+app.get('/empresas', verifyToken, (req, res) => {
+  res.json(CACHE.empresas)
+})
+
+app.post('/empresas', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  const { codigo, nombre, logo } = req.body
+  if (!codigo || !nombre) {
+    return res.status(400).json({ error: 'Codigo y nombre son requeridos' })
+  }
+  
+  // Verificar que el codigo no exista
+  const existe = CACHE.empresas.find(e => e.codigo === codigo)
+  if (existe) {
+    return res.status(400).json({ error: 'Ya existe una empresa con ese codigo' })
+  }
+  
+  const result = await dbQuery(
+    'INSERT INTO empresas_trabajo (codigo, nombre, logo) VALUES ($1, $2, $3) RETURNING *',
+    [codigo, nombre, logo || null]
+  )
+  
+  if (result.success && result.rows.length > 0) {
+    CACHE.empresas.push(result.rows[0])
+    registrarLog('success', 'Empresa creada', { codigo, nombre }, req.user.email)
+    res.status(201).json(result.rows[0])
+  } else {
+    res.status(500).json({ error: 'Error al crear empresa' })
+  }
+})
+
+app.put('/empresas/:id', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  const id = parseInt(req.params.id)
+  const { codigo, nombre, logo } = req.body
+  
+  if (!codigo || !nombre) {
+    return res.status(400).json({ error: 'Codigo y nombre son requeridos' })
+  }
+  
+  const result = await dbQuery(
+    'UPDATE empresas_trabajo SET codigo=$1, nombre=$2, logo=$3 WHERE id=$4 RETURNING *',
+    [codigo, nombre, logo || null, id]
+  )
+  
+  if (result.success && result.rows.length > 0) {
+    const idx = CACHE.empresas.findIndex(e => e.id === id)
+    if (idx !== -1) CACHE.empresas[idx] = result.rows[0]
+    registrarLog('info', 'Empresa actualizada', { id, nombre }, req.user.email)
+    res.json(result.rows[0])
+  } else {
+    res.status(404).json({ error: 'Empresa no encontrada' })
+  }
+})
+
+app.delete('/empresas/:id', verifyToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' })
+  
+  const id = parseInt(req.params.id)
+  
+  // Verificar si hay usuarios asignados a esta empresa
+  const usuariosConEmpresa = CACHE.usuarios.filter(u => u.empresa_id === id)
+  if (usuariosConEmpresa.length > 0) {
+    return res.status(400).json({ 
+      error: `No se puede eliminar: ${usuariosConEmpresa.length} usuario(s) asignados a esta empresa` 
+    })
+  }
+  
+  CACHE.empresas = CACHE.empresas.filter(e => e.id !== id)
+  dbWriteAsync('DELETE FROM empresas_trabajo WHERE id = $1', [id])
+  registrarLog('warning', 'Empresa eliminada', { id }, req.user.email)
+  res.json({ message: 'Eliminada' })
+})
+
 // ===== USUARIOS (DESDE CACHÉ) =====
 // Permiso: supervisar_horas o gestionar_usuarios (para que supervisores puedan ver lista de operarios)
 app.get('/usuarios', verifyToken, (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios') && !hasPermiso(req.user, 'supervisar_horas')) {
     return res.status(403).json({ error: 'No autorizado' })
   }
-  res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false, codigo_trabajador: u.codigo_trabajador || null })))
+  res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false, codigo_trabajador: u.codigo_trabajador || null, empresa_id: u.empresa_id || null })))
 })
 
 
@@ -1385,12 +1487,12 @@ app.post('/usuarios/importar-masivo', verifyToken, async (req, res) => {
 app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
-  const { email, nombre, role, password, codigo_trabajador } = req.body
+  const { email, nombre, role, password, codigo_trabajador, empresa_id } = req.body
   
   // Validar email
   const cleanEmail = sanitizeEmail(email)
   if (!cleanEmail) {
-    return res.status(400).json({ error: 'Email inválido' })
+    return res.status(400).json({ error: 'Email invalido' })
   }
   
   // Sanitizar nombre
@@ -1402,23 +1504,24 @@ app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   // Validar role
   const validRoles = ['admin', 'supervisor', 'operario']
   if (!role || !validRoles.includes(role)) {
-    return res.status(400).json({ error: 'Role inválido' })
+    return res.status(400).json({ error: 'Role invalido' })
   }
   
   // Verificar si el email ya existe
   const existingUser = CACHE.usuarios.find(u => u.email.toLowerCase() === cleanEmail)
   if (existingUser) {
-    return res.status(400).json({ error: 'El email ya está registrado' })
+    return res.status(400).json({ error: 'El email ya esta registrado' })
   }
   
   const hashedPassword = bcrypt.hashSync(password || 'TempPassword2025!', 10)
   const cleanCodigoTrabajador = codigo_trabajador ? sanitizeString(codigo_trabajador, 20) : null
+  const cleanEmpresaId = empresa_id ? parseInt(empresa_id) : null
   
-  console.log('Creando usuario:', { email: cleanEmail, nombre: cleanNombre, role, codigo_trabajador: cleanCodigoTrabajador })
+  console.log('Creando usuario:', { email: cleanEmail, nombre: cleanNombre, role, codigo_trabajador: cleanCodigoTrabajador, empresa_id: cleanEmpresaId })
   
   const result = await dbQuery(
-    'INSERT INTO usuarios_horas (email, nombre, role, password, codigo_trabajador) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, nombre, role, activo, codigo_trabajador',
-    [cleanEmail, cleanNombre, role, hashedPassword, cleanCodigoTrabajador]
+    'INSERT INTO usuarios_horas (email, nombre, role, password, codigo_trabajador, empresa_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, nombre, role, activo, codigo_trabajador, empresa_id',
+    [cleanEmail, cleanNombre, role, hashedPassword, cleanCodigoTrabajador, cleanEmpresaId]
   )
   
   console.log('Resultado INSERT usuario:', result)
@@ -1426,8 +1529,8 @@ app.post('/usuarios', verifyToken, createUserLimiter, async (req, res) => {
   if (result.success && result.rows.length > 0) {
     CACHE.usuarios.push({ ...result.rows[0], password: hashedPassword })
     registrarLog('success', 'Usuario creado', { email: cleanEmail }, req.user.email)
-    // Auditoría
-    registrarAuditoria(req, 'CREAR_USUARIO', 'usuarios', result.rows[0].id, null, { email: cleanEmail, nombre: cleanNombre, role })
+    // Auditoria
+    registrarAuditoria(req, 'CREAR_USUARIO', 'usuarios', result.rows[0].id, null, { email: cleanEmail, nombre: cleanNombre, role, empresa_id: cleanEmpresaId })
     res.status(201).json(result.rows[0])
   } else {
     console.error('Error creando usuario:', result.error)
@@ -1439,22 +1542,23 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
   const userId = parseInt(req.params.id)
-  const { email, nombre, role, password, codigo_trabajador } = req.body
+  const { email, nombre, role, password, codigo_trabajador, empresa_id } = req.body
   
-  // Guardar datos anteriores para auditoría
+  // Guardar datos anteriores para auditoria
   const usuarioAnterior = CACHE.usuarios.find(u => u.id === userId)
-  const datosAnteriores = usuarioAnterior ? { email: usuarioAnterior.email, nombre: usuarioAnterior.nombre, role: usuarioAnterior.role, codigo_trabajador: usuarioAnterior.codigo_trabajador } : null
+  const datosAnteriores = usuarioAnterior ? { email: usuarioAnterior.email, nombre: usuarioAnterior.nombre, role: usuarioAnterior.role, codigo_trabajador: usuarioAnterior.codigo_trabajador, empresa_id: usuarioAnterior.empresa_id } : null
   
   const cleanCodigoTrabajador = codigo_trabajador !== undefined ? (codigo_trabajador ? sanitizeString(codigo_trabajador, 20) : null) : (usuarioAnterior?.codigo_trabajador || null)
+  const cleanEmpresaId = empresa_id !== undefined ? (empresa_id ? parseInt(empresa_id) : null) : (usuarioAnterior?.empresa_id || null)
   
   let query, params
   if (password) {
     const hashedPassword = bcrypt.hashSync(password, 10)
-    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, password=$4, codigo_trabajador=$5 WHERE id=$6 RETURNING id, email, nombre, role, activo, codigo_trabajador'
-    params = [email, nombre, role, hashedPassword, cleanCodigoTrabajador, userId]
+    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, password=$4, codigo_trabajador=$5, empresa_id=$6 WHERE id=$7 RETURNING id, email, nombre, role, activo, codigo_trabajador, empresa_id'
+    params = [email, nombre, role, hashedPassword, cleanCodigoTrabajador, cleanEmpresaId, userId]
   } else {
-    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, codigo_trabajador=$4 WHERE id=$5 RETURNING id, email, nombre, role, activo, codigo_trabajador'
-    params = [email, nombre, role, cleanCodigoTrabajador, userId]
+    query = 'UPDATE usuarios_horas SET email=$1, nombre=$2, role=$3, codigo_trabajador=$4, empresa_id=$5 WHERE id=$6 RETURNING id, email, nombre, role, activo, codigo_trabajador, empresa_id'
+    params = [email, nombre, role, cleanCodigoTrabajador, cleanEmpresaId, userId]
   }
   
   const result = await dbQuery(query, params)
@@ -1462,12 +1566,12 @@ app.put('/usuarios/:id', verifyToken, async (req, res) => {
   if (result.success && result.rows.length > 0) {
     const idx = CACHE.usuarios.findIndex(u => u.id === userId)
     if (idx !== -1) {
-      CACHE.usuarios[idx] = { ...CACHE.usuarios[idx], email, nombre, role, codigo_trabajador: cleanCodigoTrabajador }
+      CACHE.usuarios[idx] = { ...CACHE.usuarios[idx], email, nombre, role, codigo_trabajador: cleanCodigoTrabajador, empresa_id: cleanEmpresaId }
       if (password) CACHE.usuarios[idx].password = bcrypt.hashSync(password, 10)
     }
     registrarLog('info', 'Usuario actualizado', { id: userId }, req.user.email)
-    // Auditoría
-    registrarAuditoria(req, 'EDITAR_USUARIO', 'usuarios', userId, datosAnteriores, { email, nombre, role, codigo_trabajador: cleanCodigoTrabajador, passwordChanged: !!password })
+    // Auditoria
+    registrarAuditoria(req, 'EDITAR_USUARIO', 'usuarios', userId, datosAnteriores, { email, nombre, role, codigo_trabajador: cleanCodigoTrabajador, empresa_id: cleanEmpresaId, passwordChanged: !!password })
     res.json(result.rows[0])
   } else {
     res.status(404).json({ error: 'No encontrado' })
@@ -1522,12 +1626,12 @@ app.put('/usuarios/:id/toggle-activo', verifyToken, async (req, res) => {
 app.get('/usuarios/todos', verifyToken, async (req, res) => {
   if (!hasPermiso(req.user, 'gestionar_usuarios')) return res.status(403).json({ error: 'No autorizado' })
   
-  const result = await dbQuery('SELECT id, email, nombre, role, activo, codigo_trabajador FROM usuarios_horas ORDER BY activo DESC, nombre')
+  const result = await dbQuery('SELECT id, email, nombre, role, activo, codigo_trabajador, empresa_id FROM usuarios_horas ORDER BY activo DESC, nombre')
   if (result.success) {
     res.json(result.rows)
   } else {
     // Fallback al cache
-    res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false, codigo_trabajador: u.codigo_trabajador || null })))
+    res.json(CACHE.usuarios.map(u => ({ id: u.id, email: u.email, nombre: u.nombre, role: u.role, activo: u.activo !== false, codigo_trabajador: u.codigo_trabajador || null, empresa_id: u.empresa_id || null })))
   }
 })
 
