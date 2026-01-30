@@ -364,6 +364,11 @@ async function initializeCache() {
     await dbQuery(`ALTER TABLE mantenimientos_trabajo ADD COLUMN IF NOT EXISTS activitat VARCHAR(50)`)
     // Añadir columna para saber quién registró las horas (si fue un supervisor)
     await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS registrado_por INTEGER`)
+    // Columnas para tipos especiales (Festiu, Faltas, Guardia)
+    await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS motivo TEXT`)
+    await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS imagen_justificante TEXT`)
+    await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS semana_guardia_inicio DATE`)
+    await dbQuery(`ALTER TABLE horas_trabajo ADD COLUMN IF NOT EXISTS semana_guardia_fin DATE`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS mantenimientos_trabajo (id SERIAL PRIMARY KEY, descripcion TEXT NOT NULL, cliente VARCHAR(255) NOT NULL, tipo_alerta VARCHAR(20), primera_alerta DATE, proxima_alerta DATE, estado VARCHAR(20) DEFAULT 'activo', alertas_email TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
     await dbQuery(`CREATE TABLE IF NOT EXISTS roles_horas (id SERIAL PRIMARY KEY, nombre VARCHAR(50) UNIQUE NOT NULL, permisos JSONB DEFAULT '[]')`)
     // Tabla de logs de seguridad persistentes
@@ -814,11 +819,54 @@ app.get('/horas', verifyToken, async (req, res) => {
 })
 
 app.post('/horas', verifyToken, async (req, res) => {
-  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, usuario_id, usuario_ids } = req.body
+  const { fecha, tipo_trabajo, numero_aviso, horas: cant_horas, descripcion, usuario_id, usuario_ids, motivo, imagen_justificante, semana_guardia_inicio, semana_guardia_fin } = req.body
   
-  if (!fecha || !tipo_trabajo || !numero_aviso || cant_horas === undefined) {
-    return res.status(400).json({ error: 'Campos requeridos' })
+  // DEBUG DETALLADO: Ver exactamente qué datos llegan
+  console.log('========== POST /horas DEBUG ==========')
+  console.log('Body completo:', JSON.stringify(req.body, (key, value) => {
+    if (key === 'imagen_justificante' && value) return '[BASE64_OMITIDO]'
+    return value
+  }, 2))
+  console.log('tipo_trabajo recibido:', tipo_trabajo, '| tipo:', typeof tipo_trabajo)
+  console.log('fecha:', fecha, '| horas:', cant_horas)
+  console.log('motivo:', motivo)
+  console.log('semana_guardia_inicio:', semana_guardia_inicio)
+  console.log('semana_guardia_fin:', semana_guardia_fin)
+  
+  // Tipos especiales que no requieren numero_aviso
+  const tiposEspeciales = ['Festiu', 'Falta_Justificada', 'Falta_Injustificada', 'Guardia']
+  const esEspecial = tiposEspeciales.includes(tipo_trabajo)
+  console.log('tiposEspeciales:', tiposEspeciales)
+  console.log('esEspecial:', esEspecial)
+  console.log('=========================================')
+  
+  // Validación básica
+  if (!fecha || !tipo_trabajo || cant_horas === undefined) {
+    console.log('❌ ERROR: Campos básicos faltantes - fecha:', !!fecha, 'tipo_trabajo:', !!tipo_trabajo, 'horas:', cant_horas !== undefined)
+    return res.status(400).json({ error: 'Campos requeridos: fecha, tipo_trabajo, horas' })
   }
+  
+  // numero_aviso solo es requerido para tipos normales (Aviso, Obra, Mantenimiento)
+  if (!esEspecial && !numero_aviso) {
+    console.log('❌ ERROR: numero_aviso requerido para tipo normal:', tipo_trabajo)
+    return res.status(400).json({ error: `Numero de aviso/obra requerido para tipo: ${tipo_trabajo}` })
+  }
+  
+  // Validaciones especificas por tipo
+  if (tipo_trabajo === 'Falta_Justificada' && !motivo) {
+    console.log('❌ ERROR: motivo requerido para Falta_Justificada')
+    return res.status(400).json({ error: 'Motivo requerido para falta justificada' })
+  }
+  if (tipo_trabajo === 'Falta_Injustificada' && !motivo) {
+    console.log('❌ ERROR: motivo requerido para Falta_Injustificada')
+    return res.status(400).json({ error: 'Motivo requerido para falta injustificada' })
+  }
+  if (tipo_trabajo === 'Guardia' && (!semana_guardia_inicio || !semana_guardia_fin)) {
+    console.log('❌ ERROR: fechas de guardia requeridas')
+    return res.status(400).json({ error: 'Fechas de semana de guardia requeridas' })
+  }
+  
+  console.log('✅ Validaciones pasadas, procediendo a insertar...')
   
   // MODO MASIVO: Registrar horas para múltiples usuarios
   if (usuario_ids && Array.isArray(usuario_ids) && usuario_ids.length > 0) {
@@ -839,8 +887,8 @@ app.post('/horas', verifyToken, async (req, res) => {
     for (const uid of usuariosValidos) {
       const targetUserId = parseInt(uid)
       const result = await dbQuery(
-        'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, registrado_por) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-        [targetUserId, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '', req.user.id]
+        'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, registrado_por, motivo, imagen_justificante, semana_guardia_inicio, semana_guardia_fin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
+        [targetUserId, fecha, tipo_trabajo, numero_aviso || null, parseFloat(cant_horas), descripcion || '', req.user.id, motivo || null, imagen_justificante || null, semana_guardia_inicio || null, semana_guardia_fin || null]
       )
       
       if (result.success && result.rows.length > 0) {
@@ -900,8 +948,8 @@ app.post('/horas', verifyToken, async (req, res) => {
   }
   
   const result = await dbQuery(
-    'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, registrado_por) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-    [targetUserId, fecha, tipo_trabajo, numero_aviso, parseFloat(cant_horas), descripcion || '', registradoPor]
+    'INSERT INTO horas_trabajo (usuario_id, fecha, tipo_trabajo, numero_aviso, horas, descripcion, registrado_por, motivo, imagen_justificante, semana_guardia_inicio, semana_guardia_fin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
+    [targetUserId, fecha, tipo_trabajo, numero_aviso || null, parseFloat(cant_horas), descripcion || '', registradoPor, motivo || null, imagen_justificante || null, semana_guardia_inicio || null, semana_guardia_fin || null]
   )
   
   if (result.success && result.rows.length > 0) {
@@ -1171,7 +1219,7 @@ app.get('/avisos/activos', verifyToken, (req, res) => {
   res.json(CACHE.avisos.filter(a => a.estado === 'en_curso'))
 })
 
-app.post('/avisos', verifyToken, verifyAdmin, async (req, res) => {
+app.post('/avisos', verifyToken, async (req, res) => {
   const { numero, cliente, descripcion, estado, fecha, alertas_email, activitat } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
     return res.status(400).json({ error: 'Campos requeridos' })
@@ -1226,7 +1274,7 @@ app.get('/obras/activas', verifyToken, (req, res) => {
   res.json(CACHE.obras.filter(o => o.estado === 'en_curso'))
 })
 
-app.post('/obras', verifyToken, verifyAdmin, async (req, res) => {
+app.post('/obras', verifyToken, async (req, res) => {
   const { numero, cliente, descripcion, estado, fecha, fecha_fin_estimada, alertas_email, numero_gomanage, activitat } = req.body
   if (!numero || !cliente || !descripcion || !fecha) {
     return res.status(400).json({ error: 'Campos requeridos' })
@@ -1281,7 +1329,7 @@ app.get('/mantenimientos/activos', verifyToken, (req, res) => {
   res.json(CACHE.mantenimientos.filter(m => m.estado === 'activo'))
 })
 
-app.post('/mantenimientos', verifyToken, verifyAdmin, async (req, res) => {
+app.post('/mantenimientos', verifyToken, async (req, res) => {
   const { descripcion, tipo_alerta, cliente, estado, primera_alerta, alertas_email, activitat } = req.body
   if (!descripcion || !tipo_alerta || !cliente || !primera_alerta) {
     return res.status(400).json({ error: 'Campos requeridos' })
